@@ -45,6 +45,11 @@ Backend registry (`backend/app/adapters/`):
 
 `registry.py` tries adapters in order and falls back to CIC IoT 2023 validation. Do not make
 incompatible datasets "work" by imputing or aliasing features — rejection is intended behaviour.
+The only exception is the explicit, user-triggered **"Run anyway"** (`force_incompatible=true` on
+`/models/predict-csv` and `/models/classify-dataset`): missing features are filled with training
+means, the response carries `forced_compatibility`/`imputed_features`/`compatibility_warning`, a
+forced evaluation scores only rows whose label is exactly one of the 7 classes (`is_valid: false`),
+and nothing forced is cached, saved to evaluation history, exported or used for training.
 
 ---
 
@@ -139,6 +144,18 @@ against manual `weighted_average`). Notebook cell 6 compares it with the origina
 class-stratified** subsamples (default 5,000/client) instead of the first N sorted indices, and
 exports each job as a servable bundle (`storage/fl_runs/<job>/bundle`). Demo jobs are subsampled:
 never report them as results.
+
+With `dataset_id` (FL page "Train on: <active dataset>", auth required) the job trains on the
+uploaded CSV instead: shared adapter → `clean_for_training` → stratified 20 % test → IID (or
+Dirichlet for `A_dir*`) partitions over K clients → 10 % local val. Rejected with a reason when
+fewer than 2 classes or < 20 rows/client remain. `data_source` is stored with the job
+(`data_source.json`) and shown in the UI; the page shows the job's own run, never the saved
+benchmark, after training.
+
+**Attack verdict (Detection page, `components/detection/AttackVerdict.tsx`):** dataset-level
+summary derived only from per-flow predictions: < 5 % malicious → no attack; top attack ≥ 80 %
+of malicious flows → single attack (named, with description); otherwise "multiple attacks" with a
+ranked table, mean confidence, and agreement with file labels when present.
 
 ---
 

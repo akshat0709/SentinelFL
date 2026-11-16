@@ -39,6 +39,7 @@ import { downloadDatasetBlob } from '@/lib/datasetService';
 import { NetworkFlowRecord, ProtocolType, RiskLevel } from '@/types/detection';
 import { ModelItem } from '@/types/model';
 import { apiClient } from '@/api/client';
+import { AttackVerdict } from '@/components/detection/AttackVerdict';
 
 const MODEL_CLASSES = [
   'Benign',
@@ -613,6 +614,9 @@ export const DetectionPage: React.FC = () => {
             </Button>
           </div>
         </div>
+
+        {/* Dataset-level verdict: which attack(s) this capture contains */}
+        {flows.length > 0 && <AttackVerdict flows={flows} datasetName={activeDataset?.name} />}
 
         {/* Honest 7-Class Prediction Distribution Bar */}
         {flows.length > 0 && (
