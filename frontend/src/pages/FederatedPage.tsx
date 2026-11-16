@@ -191,7 +191,7 @@ export const FederatedPage: React.FC = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-shrink-0">
           <select
             className="h-8 rounded border border-border bg-surface px-2 text-xs text-charcoal-800"
             value={useActive ? 'active' : 'benchmark'}
@@ -216,6 +216,7 @@ export const FederatedPage: React.FC = () => {
             leftIcon={<Play className="w-3.5 h-3.5" />}
             disabled={isTraining}
             onClick={handleStartTraining}
+            className="whitespace-nowrap"
           >
             {isTraining ? `Training ${roundsTotal} rounds...` : `Run ${roundsTotal} FedAvg Rounds`}
           </Button>
