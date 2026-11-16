@@ -35,7 +35,9 @@ ON CONFLICT (id) DO UPDATE SET
 -- ------------------------------------------------------------------------------
 
 -- Ensure RLS is active on storage.objects
-ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;
+-- RLS is already enabled on storage.objects in every Supabase project, and the table is
+-- owned by supabase_storage_admin, so ALTER TABLE here fails with "must be owner of table objects".
+-- ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;
 
 -- Drop any previous or duplicate policies
 DROP POLICY IF EXISTS "sentinelfl_storage_insert_policy" ON storage.objects;
