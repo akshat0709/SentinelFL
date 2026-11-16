@@ -60,4 +60,6 @@ export interface FLExperiment {
   baselineCentralizedF1?: number;
   createdAt: string;
   isDemonstrationRun?: boolean;
+  /** Where the training data came from (backend data_source) */
+  dataSource?: Record<string, any>;
 }

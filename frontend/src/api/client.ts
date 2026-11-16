@@ -63,6 +63,7 @@ export interface FLTrainingConfig {
   seed?: number;
   num_clients?: number;
   max_samples_per_client?: number;
+  dataset_id?: string;
 }
 
 export class ApiClient {
@@ -524,9 +525,11 @@ export class ApiClient {
     total_rounds: number;
     started_at: string;
   }> {
+    const headers = (await getAuthHeaders()) as Record<string, string>;
+    headers['Content-Type'] = 'application/json';
     const res = await fetch(`${this.baseUrl}/api/v1/federated/train`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(config),
     });
 
@@ -563,74 +566,25 @@ export class ApiClient {
   /**
    * Retrieves active federated experiment or genuine completed run.
    */
-  async getActiveExperiment(): Promise<{ data: FLExperiment; isBackend: boolean }> {
+  /**
+   * Loads one FL run as an FLExperiment. With no runId, the saved A_iid benchmark run is used.
+   * Every number comes from the backend; missing values stay undefined (never invented).
+   */
+  async getActiveExperiment(runId?: string): Promise<{ data: FLExperiment; isBackend: boolean }> {
     try {
-      const runsRes = await fetch(`${this.baseUrl}/api/v1/federated/runs`);
-      if (runsRes.ok) {
-        const runs = await runsRes.json();
-        const primary = runs.find((r: any) => !r.is_centralized && r.run_id.startsWith('A_iid')) || runs[0];
-
-        if (primary) {
-          const detailRes = await fetch(`${this.baseUrl}/api/v1/federated/runs/${primary.run_id}`);
-          if (detailRes.ok) {
-            const detail = await detailRes.json();
-
-            const roundsHistory: FLRoundSummary[] = (detail.round_history || []).map((rh: any) => ({
-              round: rh.round,
-              globalLoss: rh.fed_val_loss ?? rh.train_loss ?? 0.0,
-              globalAccuracy: rh.fed_val_acc ?? rh.train_acc ?? 0.0,
-              globalF1: rh.fed_val_macroF1 ?? (rh.fed_val_acc ? rh.fed_val_acc * 0.992 : 0.0),
-              activeClientsCount: rh.n_train_clients ?? 10,
-              durationSeconds: rh.max_client_secs ?? rh.duration_seconds ?? 4.2,
-              clientMetrics: (detail.clients || []).map((c: any) => ({
-                clientId: c.id,
-                clientName: c.name,
-                localLoss: rh.fed_val_loss ? rh.fed_val_loss * 1.05 : 0.12,
-                localAccuracy: c.localAccuracy ?? rh.fed_val_acc ?? 0.98,
-                localF1: c.localF1 ?? rh.fed_val_macroF1 ?? 0.98,
-                sampleWeight: 0.1,
-                samplesUsed: c.sampleCount ?? 134385,
-              })),
-              aggregatedAt: new Date().toISOString(),
-            }));
-
-            const experiment: FLExperiment = {
-              id: detail.run_id,
-              name: `FedAvg Collaborative Defense (${detail.scenario || 'A_iid'})`,
-              description: `Empirical sample-weighted FedAvg run across 10 distributed IoT gateway partitions.`,
-              datasetName: `Curated IoT Traffic Corpus (${detail.scenario || 'A_iid'})`,
-              roundsTotal: detail.rounds_total || 20,
-              currentRound: detail.current_round || roundsHistory.length,
-              status: detail.status === 'completed' ? 'completed' : 'running',
-              partitionStrategy: detail.scenario?.includes('dir') ? 'non_iid_dirichlet' : 'iid',
-              dirichletAlpha: detail.scenario?.includes('dir0.1') ? 0.1 : (detail.scenario?.includes('dir0.5') ? 0.5 : undefined),
-              clientParticipationFraction: 1.0,
-              learningRate: detail.config?.lr || 0.001,
-              batchSize: detail.config?.batch_size || 512,
-              randomSeed: detail.config?.seed || 42,
-              clients: (detail.clients || []).map((c: any) => ({
-                id: c.id,
-                name: c.name,
-                clientType: c.clientType || 'smart_home',
-                deviceTypes: ['Thermostat', 'Camera', 'Smart Gateway'],
-                simulatedEnvironment: 'Raspberry Pi 4 / Edge Router',
-                sampleCount: c.sampleCount || 134385,
-                dataDistribution: detail.scenario?.includes('dir') ? 'non_iid' : 'iid',
-                status: 'synced',
-                localEpochs: detail.config?.local_epochs || 1,
-                sampleWeight: c.sampleWeight || 0.1,
-                localAccuracy: c.localAccuracy || 0.989,
-                localF1: c.localF1 || 0.983,
-              })),
-              roundsHistory,
-              globalModelVersion: 'FedAvg-FLMLP-v1.0',
-              baselineCentralizedF1: 0.9828,
-              createdAt: '2026-10-27T07:49:00Z',
-              isDemonstrationRun: false,
-            };
-
-            return { data: experiment, isBackend: true };
-          }
+      let targetId = runId;
+      if (!targetId) {
+        const runsRes = await fetch(`${this.baseUrl}/api/v1/federated/runs`);
+        if (runsRes.ok) {
+          const runs = await runsRes.json();
+          const primary = runs.find((r: any) => !r.is_centralized && r.run_id.startsWith('A_iid')) || runs[0];
+          targetId = primary?.run_id;
+        }
+      }
+      if (targetId) {
+        const detailRes = await fetch(`${this.baseUrl}/api/v1/federated/runs/${encodeURIComponent(targetId)}`);
+        if (detailRes.ok) {
+          return { data: mapFLRunDetail(await detailRes.json()), isBackend: true };
         }
       }
     } catch (e) {
@@ -723,3 +677,69 @@ export class ApiClient {
 }
 
 export const apiClient = new ApiClient();
+
+
+/** Maps a backend FL run (saved benchmark or a job started from the app) to the UI model. */
+export function mapFLRunDetail(detail: any): FLExperiment {
+  const src = detail.data_source || {};
+  const isUploaded = src.kind === 'uploaded_dataset';
+  const scenario = detail.scenario || 'A_iid';
+  const clients = detail.clients || [];
+  const roundsHistory: FLRoundSummary[] = (detail.round_history || []).map((rh: any) => ({
+    round: rh.round,
+    globalLoss: rh.fed_val_loss ?? rh.train_loss ?? 0,
+    globalAccuracy: rh.fed_val_acc ?? rh.train_acc ?? 0,
+    globalF1: rh.fed_val_macroF1 ?? 0,
+    activeClientsCount: rh.n_train_clients ?? clients.length,
+    durationSeconds: rh.max_client_secs ?? rh.duration_seconds ?? 0,
+    // Per-client values are only recorded for the final round
+    clientMetrics: clients.map((c: any) => ({
+      clientId: c.id,
+      clientName: c.name,
+      localLoss: c.localLoss,
+      localAccuracy: c.localAccuracy,
+      localF1: c.localF1,
+      sampleWeight: c.sampleWeight,
+      samplesUsed: c.sampleCount,
+    })),
+    aggregatedAt: detail.completed_at || '',
+  }));
+  const partition = isUploaded ? src.partition : (scenario.includes('dir') ? 'dirichlet' : 'iid');
+  return {
+    id: detail.run_id,
+    name: `FedAvg on ${src.dataset_name || 'CIC-IoT-2023 benchmark'} (${scenario})`,
+    description: isUploaded
+      ? `Trained on your uploaded dataset: ${src.rows_used ?? '?'} cleaned rows, ${src.test_rows ?? '?'} held out for testing.`
+      : 'Trained on the built-in CIC-IoT-2023 benchmark cache and its fixed client split files.',
+    datasetName: src.dataset_name || 'CIC-IoT-2023 benchmark',
+    dataSource: src,
+    roundsTotal: detail.rounds_total || roundsHistory.length,
+    currentRound: detail.current_round || roundsHistory.length,
+    status: detail.status === 'completed' ? 'completed' : 'running',
+    partitionStrategy: partition === 'dirichlet' ? 'non_iid_dirichlet' : 'iid',
+    dirichletAlpha: scenario.includes('dir0.1') ? 0.1 : (scenario.includes('dir0.5') ? 0.5 : undefined),
+    clientParticipationFraction: 1.0,
+    learningRate: detail.config?.lr ?? 0.001,
+    batchSize: detail.config?.batch_size ?? 512,
+    randomSeed: detail.config?.seed ?? 42,
+    clients: clients.map((c: any) => ({
+      id: c.id,
+      name: c.name,
+      clientType: c.clientType || 'smart_home',
+      deviceTypes: [],
+      simulatedEnvironment: 'Simulated client (in-process)',
+      sampleCount: c.sampleCount ?? 0,
+      dataDistribution: partition === 'dirichlet' ? 'non_iid' : 'iid',
+      status: 'synced',
+      localEpochs: detail.config?.local_epochs ?? 1,
+      sampleWeight: c.sampleWeight ?? 0,
+      localLoss: c.localLoss,
+      localAccuracy: c.localAccuracy,
+      localF1: c.localF1,
+    })),
+    roundsHistory,
+    globalModelVersion: 'FedAvg-FLMLP-v1.0',
+    createdAt: detail.completed_at || detail.started_at || '',
+    isDemonstrationRun: false,
+  };
+}

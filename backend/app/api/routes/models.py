@@ -243,32 +243,8 @@ async def get_dataset_predictions(
     return res
 
 
-@router.post("/classify-dataset/{dataset_id}", response_model=BatchPredictionResponse)
-async def classify_active_dataset(
-    dataset_id: str,
-    model_id: Optional[str] = Query(None),
-    force_refresh: bool = Query(False),
-    force_incompatible: bool = Query(False, description="See /predict-csv. Never cached or evaluated."),
-    current_user: AuthenticatedUser = Depends(get_current_user),
-):
-    """
-    Retrieves the selected dataset from Supabase Storage under verified researcher workspace authorization,
-    applies exact model preprocessing, and generates PyTorch predictions for ALL valid records.
-    Never truncates at 10 records.
-    """
-    if not ml_service.is_loaded:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Model artifacts are not loaded: {ml_service.load_error}",
-        )
-
-    # If cached predictions exist and caller does not force recomputation, return immediately
-    if not force_refresh and not force_incompatible:
-        cached = ml_service.get_dataset_predictions(dataset_id)
-        if cached:
-            logger.info(f"Returning cached predictions for dataset '{dataset_id}' ({cached.total_flows} flows)")
-            return cached
-
+def load_dataset_bytes_for_user(dataset_id: str, current_user: AuthenticatedUser):
+    """Authorize access to a workspace dataset and return (raw CSV bytes, display name)."""
     # 1. Verify workspace authorization and retrieve dataset metadata
     try:
         dataset_record = verify_dataset_access(
@@ -311,7 +287,36 @@ async def classify_active_dataset(
             detail=f"Raw dataset file for '{dataset_id}' could not be retrieved from storage or local cache.",
         )
 
-    dataset_display_name = dataset_record.get("name", f"Dataset-{dataset_id[:8]}")
+    return raw_content, dataset_record.get("name", f"Dataset-{dataset_id[:8]}")
+
+
+@router.post("/classify-dataset/{dataset_id}", response_model=BatchPredictionResponse)
+async def classify_active_dataset(
+    dataset_id: str,
+    model_id: Optional[str] = Query(None),
+    force_refresh: bool = Query(False),
+    force_incompatible: bool = Query(False, description="See /predict-csv. Never cached or evaluated."),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """
+    Retrieves the selected dataset from Supabase Storage under verified researcher workspace authorization,
+    applies exact model preprocessing, and generates PyTorch predictions for ALL valid records.
+    Never truncates at 10 records.
+    """
+    if not ml_service.is_loaded:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Model artifacts are not loaded: {ml_service.load_error}",
+        )
+
+    # If cached predictions exist and caller does not force recomputation, return immediately
+    if not force_refresh and not force_incompatible:
+        cached = ml_service.get_dataset_predictions(dataset_id)
+        if cached:
+            logger.info(f"Returning cached predictions for dataset '{dataset_id}' ({cached.total_flows} flows)")
+            return cached
+
+    raw_content, dataset_display_name = load_dataset_bytes_for_user(dataset_id, current_user)
 
     # 3. Execute full batch inference and evaluation
     try:

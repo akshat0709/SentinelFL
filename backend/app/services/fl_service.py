@@ -161,6 +161,7 @@ class FLService:
                     "round_history": job.get("history", []),
                     "clients": job.get("clients", []),
                     "metrics": job.get("latest_metrics", {}),
+                    "data_source": job.get("data_source"),
                 }
 
         # Check on-disk runs in storage/fl_runs and federated/runs
@@ -273,9 +274,88 @@ class FLService:
             "round_history": round_history,
             "clients": clients,
             "metrics": final_metrics,
+            "data_source": (json.loads((target_dir / "data_source.json").read_text())
+                            if (target_dir / "data_source.json").exists() else
+                            {"kind": "benchmark_cache", "dataset_name": "CIC-IoT-2023 benchmark (saved run)"}),
         }
 
-    def start_training_job(self, req: FLTrainRequest) -> FLJobStatusResponse:
+    # Minimums for training on an uploaded dataset (below these FedAvg is not meaningful)
+    MIN_ROWS_PER_CLIENT = 20
+    TEST_FRACTION = 0.2
+
+    def prepare_dataset_source(self, raw_bytes: bytes, dataset_name: str, req: FLTrainRequest) -> Dict[str, Any]:
+        """Turn an uploaded CSV into in-memory (X, y) plus test/client partitions.
+
+        Uses the shared CIC-IoT-2023 adapter (same contract as the model), keeps only rows whose
+        label is one of the 7 model classes, removes NaN/duplicate/label-conflict rows, holds out a
+        stratified test set and partitions the rest across clients (IID, or Dirichlet for the
+        dir scenarios). Raises ValueError with a user-facing reason when FedAvg would be meaningless.
+        """
+        import io
+        from sentinelfl.adapters import CICIoT2023Adapter, DatasetCompatibilityError, clean_for_training
+        from sentinelfl.contract import CLASSES
+        from sentinelfl.partition import iid_partition, dirichlet_partition, local_split
+
+        try:
+            df = pd.read_csv(io.BytesIO(raw_bytes), low_memory=False)
+        except Exception as exc:
+            raise ValueError(f"Could not read '{dataset_name}' as CSV: {exc}")
+        try:
+            aligned = CICIoT2023Adapter().align(df)
+        except DatasetCompatibilityError as exc:
+            raise ValueError(f"'{dataset_name}' cannot be used for federated training: {exc}")
+        if aligned.labels is None:
+            raise ValueError(f"'{dataset_name}' has no label column, so clients cannot train on it.")
+
+        X, y, _, stats = clean_for_training(aligned.X.to_numpy(), aligned.label_ids())
+        y = y.astype(np.int64)
+        K = min(req.num_clients, 10)
+        present = [CLASSES[c] for c in np.unique(y)]
+        need = int(np.ceil(K * self.MIN_ROWS_PER_CLIENT / (1 - self.TEST_FRACTION)))
+        if len(present) < 2:
+            raise ValueError(
+                f"'{dataset_name}' has only {len(present)} usable class ({', '.join(present) or 'none'}) after cleaning. "
+                "A classifier needs at least 2 classes; combine it with other traffic (e.g. Benign) and upload again."
+            )
+        if len(y) < need:
+            raise ValueError(
+                f"'{dataset_name}' has {len(y)} usable labelled rows after cleaning "
+                f"({stats.get('duplicate_rows_removed', 0)} duplicates removed). Training {K} clients needs at least "
+                f"{need} rows ({self.MIN_ROWS_PER_CLIENT} per client plus a {int(self.TEST_FRACTION*100)}% test set)."
+            )
+
+        rng = np.random.default_rng(req.seed)
+        test_parts, pool_parts = [], []
+        for c in np.unique(y):
+            ci = rng.permutation(np.where(y == c)[0])
+            nt = int(round(self.TEST_FRACTION * len(ci))) if len(ci) >= 5 else 0
+            test_parts.append(ci[:nt]); pool_parts.append(ci[nt:])
+        test_idx = np.sort(np.concatenate(test_parts))
+        pool = np.sort(np.concatenate(pool_parts))
+
+        scenario = req.scenario.replace(".npz", "").strip()
+        if scenario.startswith("A_dir"):
+            alpha = 0.1 if "0.1" in scenario else 0.5
+            try:
+                shards, _ = dirichlet_partition(pool, y, K, alpha, rng,
+                                                min_client=max(5, len(pool) // (K * 5)))
+            except RuntimeError:
+                raise ValueError(f"'{dataset_name}' is too small for a Dirichlet(alpha={alpha}) split across {K} clients; use IID.")
+        else:
+            shards = iid_partition(pool, y, K, rng)
+        train_idx, val_idx = [], []
+        for sh in shards:
+            tr, va = local_split(np.asarray(sh), y, rng, 0.10)
+            train_idx.append(tr); val_idx.append(va if len(va) else tr[:1])
+        return {
+            "X": X, "y": y, "train": train_idx, "val": val_idx, "test": test_idx,
+            "info": {"kind": "uploaded_dataset", "dataset_id": req.dataset_id, "dataset_name": dataset_name,
+                     "rows_used": int(len(y)), "test_rows": int(len(test_idx)),
+                     "classes_present": present, "cleaning": stats,
+                     "partition": "dirichlet" if scenario.startswith("A_dir") else "iid"},
+        }
+
+    def start_training_job(self, req: FLTrainRequest, source: Optional[Dict[str, Any]] = None) -> FLJobStatusResponse:
         """Starts a background Federated Learning training job."""
         if fl_core is None:
             raise RuntimeError("fl_core module is unavailable. Cannot start federated training.")
@@ -290,11 +370,15 @@ class FLService:
 
         x_clean_path = self.cache_dir / "X_clean.npy"
         y_clean_path = self.cache_dir / "y_clean.npy"
-        if not x_clean_path.exists() or not y_clean_path.exists():
+        if source is None and (not x_clean_path.exists() or not y_clean_path.exists()):
             raise FileNotFoundError(
                 f"Dataset cache missing at {self.cache_dir}. "
                 "Please ensure X_clean.npy and y_clean.npy are present."
             )
+        data_source = source["info"] if source else {
+            "kind": "benchmark_cache", "dataset_name": "CIC-IoT-2023 benchmark cache",
+            "partition_file": f"{scenario_name}.npz",
+        }
 
         with self.lock:
             if self.active_job and self.active_job.get("status") == "running":
@@ -317,6 +401,7 @@ class FLService:
                 "error": None,
                 "config": req.model_dump(),
                 "clients": [],
+                "data_source": data_source,
             }
             self.active_job = job_state
             self.jobs_history[job_id] = job_state
@@ -337,7 +422,7 @@ class FLService:
         # Spawn background thread to perform training without blocking the server
         thread = threading.Thread(
             target=self._run_training_worker,
-            args=(job_id, req),
+            args=(job_id, req, source),
             daemon=True,
             name=f"FLWorker-{job_id}",
         )
@@ -350,6 +435,7 @@ class FLService:
             current_round=0,
             total_rounds=req.rounds,
             started_at=job_state["started_at"],
+            data_source=data_source,
         )
 
     def get_job_status(self, job_id: str) -> FLJobStatusResponse:
@@ -368,11 +454,12 @@ class FLService:
                     started_at=job["started_at"],
                     completed_at=job.get("completed_at"),
                     error=job.get("error"),
+                    data_source=job.get("data_source"),
                 )
 
         raise FileNotFoundError(f"Training job '{job_id}' not found.")
 
-    def _run_training_worker(self, job_id: str, req: FLTrainRequest) -> None:
+    def _run_training_worker(self, job_id: str, req: FLTrainRequest, source: Optional[Dict[str, Any]] = None) -> None:
         """Background worker thread executing real FedAvg communication rounds."""
         try:
             logger.info(f"Starting Federated Learning worker for job {job_id} (Scenario: {req.scenario}, Rounds: {req.rounds})")
@@ -383,44 +470,47 @@ class FLService:
             run_output_dir = settings.FL_RUNS_DIR / job_id
             run_output_dir.mkdir(parents=True, exist_ok=True)
 
-            # 1. Check cached dataset and splits
-            x_clean_path = self.cache_dir / "X_clean.npy"
-            y_clean_path = self.cache_dir / "y_clean.npy"
-
-            scenario_name = req.scenario.replace(".npz", "").strip()
-            split_file = self.splits_dir / f"{scenario_name}.npz"
-
-            if not x_clean_path.exists() or not y_clean_path.exists():
-                raise FileNotFoundError(
-                    f"Dataset cache missing at {self.cache_dir}. "
-                    "Please ensure X_clean.npy and y_clean.npy are present."
-                )
-
-            if not split_file.exists():
-                raise FileNotFoundError(f"Split file '{scenario_name}.npz' missing at {self.splits_dir}")
-
-            # Memory-map clean features and labels for fast, zero-copy reads
-            X_clean = np.load(x_clean_path, mmap_mode="r")
-            y_clean = np.load(y_clean_path, mmap_mode="r")
-            splits_data = np.load(split_file)
-
             num_clients = min(req.num_clients, 10)
-            client_keys = [f"c{k}_train" for k in range(num_clients)]
-            val_keys = [f"c{k}_val" for k in range(num_clients)]
-
-            # Cap samples per client if requested (for quick demonstration runs)
-            max_samples = req.max_samples_per_client or 5000
-
-            # Seeded, class-stratified subsamples. Split index arrays are sorted and the
-            # cache is ordered by source file (Benign first), so taking the first N indices
-            # (the previous behaviour) produced almost single-class clients and test sets.
             from sentinelfl.partition import stratified_subsample
-            y_all = np.asarray(y_clean)
-            client_train_indices = [stratified_subsample(splits_data[k], y_all, max_samples, req.seed + i)
-                                    for i, k in enumerate(client_keys)]
-            client_val_indices = [stratified_subsample(splits_data[k], y_all, max(500, max_samples // 10), req.seed + 100 + i)
-                                  for i, k in enumerate(val_keys)]
-            test_indices = stratified_subsample(splits_data["test"], y_all, max_samples, req.seed + 999)
+            if source is not None:
+                # 1a. Uploaded dataset: partitions were prepared (and validated) at dispatch time.
+                X_clean, y_clean = source["X"], source["y"]
+                y_all = y_clean
+                cap = req.max_samples_per_client
+                client_train_indices = [stratified_subsample(ix, y_all, cap, req.seed + i) if cap else ix
+                                        for i, ix in enumerate(source["train"])]
+                client_val_indices = list(source["val"])
+                test_indices = source["test"]
+                max_samples = cap
+            else:
+                # 1b. Built-in CIC-IoT-2023 benchmark cache and fixed split files
+                x_clean_path = self.cache_dir / "X_clean.npy"
+                y_clean_path = self.cache_dir / "y_clean.npy"
+                scenario_name = req.scenario.replace(".npz", "").strip()
+                split_file = self.splits_dir / f"{scenario_name}.npz"
+                if not x_clean_path.exists() or not y_clean_path.exists():
+                    raise FileNotFoundError(
+                        f"Dataset cache missing at {self.cache_dir}. "
+                        "Please ensure X_clean.npy and y_clean.npy are present."
+                    )
+                if not split_file.exists():
+                    raise FileNotFoundError(f"Split file '{scenario_name}.npz' missing at {self.splits_dir}")
+
+                # Memory-map clean features and labels for fast, zero-copy reads
+                X_clean = np.load(x_clean_path, mmap_mode="r")
+                y_clean = np.load(y_clean_path, mmap_mode="r")
+                splits_data = np.load(split_file)
+                client_keys = [f"c{k}_train" for k in range(num_clients)]
+                val_keys = [f"c{k}_val" for k in range(num_clients)]
+                max_samples = req.max_samples_per_client or 5000
+                # Seeded, class-stratified subsamples (the cache is ordered by source file, so
+                # taking the first N indices would give almost single-class clients).
+                y_all = np.asarray(y_clean)
+                client_train_indices = [stratified_subsample(splits_data[k], y_all, max_samples, req.seed + i)
+                                        for i, k in enumerate(client_keys)]
+                client_val_indices = [stratified_subsample(splits_data[k], y_all, max(500, max_samples // 10), req.seed + 100 + i)
+                                      for i, k in enumerate(val_keys)]
+                test_indices = stratified_subsample(splits_data["test"], y_all, max_samples, req.seed + 999)
 
             # 2. Federated Standardization (privacy-preserving local stats aggregation)
             stats = [fl_core.local_stats(X_clean[idx]) for idx in client_train_indices]
@@ -546,7 +636,8 @@ class FLService:
                     "training": {"scenario": req.scenario, "rounds": req.rounds, "local_epochs": req.local_epochs,
                                  "num_clients": num_clients, "max_samples_per_client": max_samples,
                                  "seed": req.seed, "lr": req.lr, "batch_size": req.batch_size},
-                    "provenance": "backend fl_service demo job (subsampled data; not a reportable result)",
+                    "data_source": {k: v for k, v in self.jobs_history[job_id].get("data_source", {}).items() if k != "cleaning"},
+                    "provenance": "backend fl_service job (not a reportable result)",
                 }).save(run_output_dir / "bundle")
             except Exception as bexc:  # bundle export must never fail the job
                 logger.warning(f"[{job_id}] could not export model bundle: {bexc}")
@@ -554,6 +645,8 @@ class FLService:
             # Save configuration and history to disk
             with open(run_output_dir / "run_config.json", "w") as f:
                 json.dump(req.model_dump(), f, indent=2)
+            with open(run_output_dir / "data_source.json", "w") as f:
+                json.dump(self.jobs_history[job_id].get("data_source", {}), f, indent=2, default=str)
 
             df_history = pd.DataFrame(self.jobs_history[job_id]["history"])
             df_history.to_csv(run_output_dir / "round_history.csv", index=False)

@@ -1,6 +1,9 @@
 import logging
-from typing import Dict, Any, List
-from fastapi import APIRouter, HTTPException, status
+from typing import Dict, Any, List, Optional
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials
+
+from app.core.security import security_scheme, get_current_user
 
 from app.schemas.federated import (
     FLStatusResponse,
@@ -50,14 +53,27 @@ async def get_fl_run_details(run_id: str):
 
 
 @router.post("/train", response_model=FLJobStatusResponse)
-async def start_federated_training(req: FLTrainRequest):
+async def start_federated_training(
+    req: FLTrainRequest,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
+):
     """
     Launches a genuine Federated Learning (FedAvg) training job in the background.
-    Distributes local training to participating clients across the chosen scenario split,
-    aggregates weights with sample weighting, and updates the global model checkpoint.
+    With ``dataset_id`` the selected uploaded dataset is cleaned, split into a held-out test set
+    and client partitions, and trained on; otherwise the built-in CIC-IoT-2023 benchmark cache
+    and its fixed split files are used.
     """
+    source = None
+    if req.dataset_id:
+        user = await get_current_user(credentials)
+        from app.api.routes.models import load_dataset_bytes_for_user
+        raw, name = load_dataset_bytes_for_user(req.dataset_id, user)
+        try:
+            source = fl_service.prepare_dataset_source(raw, name, req)
+        except ValueError as ve:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
     try:
-        status_res = fl_service.start_training_job(req)
+        status_res = fl_service.start_training_job(req, source=source)
         return status_res
     except RuntimeError as re:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(re))

@@ -21,9 +21,14 @@ import { storage } from '@/lib/storage';
 import { FLExperiment, FLClient, PartitionStrategy } from '@/types/federated';
 import { apiClient } from '@/api/client';
 import { ActiveDatasetSelector } from '@/components/common/ActiveDatasetSelector';
+import { useActiveDataset } from '@/contexts/ActiveDatasetContext';
 
 export const FederatedPage: React.FC = () => {
   const { success, info, error } = useToast();
+  const { activeDataset } = useActiveDataset();
+  // Train on the selected dataset by default; the benchmark cache stays available.
+  const [trainOn, setTrainOn] = useState<'active' | 'benchmark'>('active');
+  const useActive = trainOn === 'active' && !!activeDataset;
 
   const [experiment, setExperiment] = useState<FLExperiment | null>(null);
   const [selectedClient, setSelectedClient] = useState<FLClient | null>(null);
@@ -40,12 +45,12 @@ export const FederatedPage: React.FC = () => {
   const [batchSize, setBatchSize] = useState(512);
   const [randomSeed, setRandomSeed] = useState(42);
 
-  const loadExperiment = async () => {
+  const loadExperiment = async (runId?: string) => {
     try {
-      const { data: exp } = await apiClient.getActiveExperiment();
+      const { data: exp } = await apiClient.getActiveExperiment(runId);
       if (exp) {
         setExperiment(exp);
-        if (exp.clients.length > 0 && !selectedClient) {
+        if (exp.clients.length > 0) {
           setSelectedClient(exp.clients[0]);
         }
         return;
@@ -70,67 +75,49 @@ export const FederatedPage: React.FC = () => {
         scenario = dirichletAlpha <= 0.2 ? 'A_dir0.1' : 'A_dir0.5';
       }
 
-      const res = await apiClient.startFLTraining({
+      const sourceName = useActive ? activeDataset!.name : 'CIC-IoT-2023 benchmark';
+      const res: any = await apiClient.startFLTraining({
         scenario,
-        rounds: Math.min(roundsTotal, 5),
+        rounds: roundsTotal,
         local_epochs: localEpochs,
         batch_size: batchSize,
         lr: learningRate,
         seed: randomSeed,
         num_clients: 10,
-        max_samples_per_client: 3000,
+        // The benchmark cache has ~1.75M rows: subsample it for an interactive run.
+        // An uploaded dataset is used in full.
+        max_samples_per_client: useActive ? undefined : 3000,
+        dataset_id: useActive ? activeDataset!.id : undefined,
       });
 
       setActiveJobId(res.job_id);
-      info('FedAvg Round Dispatched', `Training job ${res.job_id} running across 10 client silos.`);
+      const src = res.data_source || {};
+      info(
+        'FedAvg Training Started',
+        useActive
+          ? `Job ${res.job_id}: ${roundsTotal} rounds on "${sourceName}" (${src.rows_used ?? '?'} cleaned rows, ${src.test_rows ?? '?'} held out for testing; classes: ${(src.classes_present || []).join(', ')}).`
+          : `Job ${res.job_id}: ${roundsTotal} rounds on the CIC-IoT-2023 benchmark (3,000 rows per client).`
+      );
 
       const interval = setInterval(async () => {
         try {
           const job = await apiClient.getFLJobStatus(res.job_id);
-
-          // Live Telemetry Synchronization: update active convergence curves & metrics
+          // Live progress: show this job's own run (rounds so far), never the saved benchmark
           if (job && Array.isArray(job.history) && job.history.length > 0) {
-            setExperiment(prev => {
-              if (!prev) return prev;
-              const mappedRounds = job.history.map((rh: any) => ({
-                round: rh.round,
-                globalLoss: rh.fed_val_loss ?? rh.train_loss ?? 0.0,
-                globalAccuracy: rh.fed_val_acc ?? rh.train_acc ?? 0.0,
-                globalF1: rh.fed_val_macroF1 ?? (rh.fed_val_acc ? rh.fed_val_acc * 0.992 : 0.0),
-                activeClientsCount: rh.n_train_clients ?? 10,
-                durationSeconds: rh.duration_seconds ?? 4.2,
-                clientMetrics: (prev.clients || []).map((c: any) => ({
-                  clientId: c.id,
-                  clientName: c.name,
-                  localLoss: rh.fed_val_loss ? rh.fed_val_loss * 1.05 : 0.12,
-                  localAccuracy: c.localAccuracy ?? rh.fed_val_acc ?? 0.98,
-                  localF1: c.localF1 ?? rh.fed_val_macroF1 ?? 0.98,
-                  sampleWeight: 0.1,
-                  samplesUsed: c.sampleCount ?? 134385,
-                })),
-                aggregatedAt: new Date().toISOString(),
-              }));
-
-              return {
-                ...prev,
-                currentRound: job.current_round,
-                roundsHistory: mappedRounds,
-                status: job.status === 'completed' ? 'completed' : 'running',
-              };
-            });
+            loadExperiment(res.job_id);
           }
 
           if (job.status === 'completed') {
             clearInterval(interval);
             setIsTraining(false);
             setActiveJobId(null);
+            const m = job.latest_metrics;
             success(
               'FedAvg Training Finished',
-              `Completed communication rounds across all 10 edge clients. Latest test accuracy: ${
-                job.latest_metrics ? (job.latest_metrics.fed_val_acc * 100).toFixed(2) + '%' : '98.9%'
-              }`
+              `"${sourceName}": ${job.current_round} rounds across 10 clients. ` +
+                (m ? `Held-out test accuracy ${(m.fed_val_acc * 100).toFixed(2)}%, macro F1 ${(m.fed_val_macroF1 * 100).toFixed(2)}%.` : 'No metrics were recorded.')
             );
-            loadExperiment();
+            loadExperiment(res.job_id);
           } else if (job.status === 'failed') {
             clearInterval(interval);
             setIsTraining(false);
@@ -194,8 +181,8 @@ export const FederatedPage: React.FC = () => {
             </h2>
             <Badge variant="forest">FedAvg Protocol</Badge>
             {experiment && (
-              <Badge variant="neutral">
-                Saved FL Experiment: {experiment.id}
+              <Badge variant={experiment.dataSource?.kind === 'uploaded_dataset' ? 'forest' : 'neutral'}>
+                {experiment.dataSource?.kind === 'uploaded_dataset' ? 'Your run' : 'Saved benchmark run'}: {experiment.datasetName} · {experiment.id}
               </Badge>
             )}
           </div>
@@ -205,6 +192,16 @@ export const FederatedPage: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2">
+          <select
+            className="h-8 rounded border border-border bg-surface px-2 text-xs text-charcoal-800"
+            value={useActive ? 'active' : 'benchmark'}
+            onChange={e => setTrainOn(e.target.value as 'active' | 'benchmark')}
+            disabled={isTraining}
+            title="Which data the 10 simulated clients train on"
+          >
+            {activeDataset && <option value="active">Train on: {activeDataset.name}</option>}
+            <option value="benchmark">Train on: CIC-IoT-2023 benchmark</option>
+          </select>
           <Button
             size="sm"
             variant="outline"
@@ -220,7 +217,7 @@ export const FederatedPage: React.FC = () => {
             disabled={isTraining}
             onClick={handleStartTraining}
           >
-            {isTraining ? `Training FedAvg Round...` : 'Run FedAvg Round'}
+            {isTraining ? `Training ${roundsTotal} rounds...` : `Run ${roundsTotal} FedAvg Rounds`}
           </Button>
         </div>
       </div>
@@ -529,7 +526,7 @@ export const FederatedPage: React.FC = () => {
               label="Communication Rounds"
               type="number"
               min="1"
-              max="100"
+              max="50"
               value={roundsTotal}
               onChange={e => setRoundsTotal(Number(e.target.value))}
             />

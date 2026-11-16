@@ -21,6 +21,8 @@ class FLTrainRequest(BaseModel):
     seed: int = Field(42, description="Random seed")
     num_clients: int = Field(10, ge=1, le=10, description="Number of participating edge clients")
     max_samples_per_client: Optional[int] = Field(None, description="Optional cap on samples per client for fast rounds")
+    dataset_id: Optional[str] = Field(None, description="Train on this uploaded workspace dataset instead of the "
+                                                       "built-in CIC-IoT-2023 benchmark cache (requires auth)")
 
 
 class FLJobStatusResponse(BaseModel):
@@ -34,6 +36,7 @@ class FLJobStatusResponse(BaseModel):
     started_at: str
     completed_at: Optional[str] = None
     error: Optional[str] = None
+    data_source: Optional[Dict[str, Any]] = None
 
 
 class FLRunDetailResponse(BaseModel):
@@ -46,3 +49,4 @@ class FLRunDetailResponse(BaseModel):
     round_history: List[Dict[str, Any]]
     clients: List[Dict[str, Any]]
     metrics: Dict[str, Any]
+    data_source: Optional[Dict[str, Any]] = None
