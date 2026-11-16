@@ -154,7 +154,8 @@ benchmark, after training.
 
 **Attack verdict (Detection page, `components/detection/AttackVerdict.tsx`):** dataset-level
 summary derived only from per-flow predictions: < 5 % malicious → no attack; top attack ≥ 80 %
-of malicious flows → single attack (named, with description); otherwise "multiple attacks" with a
+of malicious flows → single attack (named, with description); otherwise the most common attack is named
+as the "Main attack" with its share, plus a
 ranked table, mean confidence, and agreement with file labels when present.
 
 ---

@@ -100,9 +100,18 @@ export const AttackVerdict: React.FC<{ flows: NetworkFlowRecord[]; datasetName?:
           <p className="text-sm text-charcoal-700">{ATTACK_INFO[top.cls]?.description}</p>
         </>
       ) : (
-        <p className="mt-1 text-base font-bold text-red-800">
-          Multiple attacks detected ({v.major.length}): this capture is not a single attack.
-        </p>
+        <>
+          <p className="mt-1 text-base font-bold text-red-800">
+            Main attack: {ATTACK_INFO[top.cls]?.title || top.cls}{' '}
+            <span className="text-sm font-semibold">({ATTACK_INFO[top.cls]?.family || 'attack'})</span>
+          </p>
+          <p className="text-sm text-charcoal-700">{ATTACK_INFO[top.cls]?.description}</p>
+          <p className="mt-1 text-xs font-semibold text-red-800">
+            Most common attack, but only {pct(top.share)} of attack traffic ({top.n.toLocaleString()} of{' '}
+            {v.malCount.toLocaleString()} malicious flows): {v.rows.length - 1} other attack type
+            {v.rows.length - 1 === 1 ? ' was' : 's were'} also detected (see table).
+          </p>
+        </>
       )}
 
       {v.kind !== 'none' && (
