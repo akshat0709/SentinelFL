@@ -49,7 +49,7 @@ export const AppLayout: React.FC = () => {
     },
     '/federated-learning': {
       title: 'Federated Learning Orchestration (FedAvg)',
-      description: 'Collaborative model training across Smart-Home, Industrial, and Campus IoT simulated nodes.',
+      description: 'Collaborative FedAvg training across 10 simulated IoT edge clients (raw flows never leave a client).',
     },
     '/detection': {
       title: 'Network Flow Intrusion Detection',

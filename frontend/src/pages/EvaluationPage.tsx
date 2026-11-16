@@ -85,9 +85,10 @@ export const EvaluationPage: React.FC = () => {
 
     loadData();
 
-    // Check localStorage cache for last active evaluation
+    // Restore the last ad-hoc evaluation only when no dataset is active; an active dataset
+    // always loads its own evaluation (below), never another dataset's cached result.
     try {
-      const cached = localStorage.getItem('sentinelfl_active_eval');
+      const cached = activeDatasetId ? null : localStorage.getItem('sentinelfl_active_eval');
       if (cached) {
         const parsed = JSON.parse(cached);
         if (parsed && (parsed.has_ground_truth || parsed.hasGroundTruth)) {
@@ -110,6 +111,8 @@ export const EvaluationPage: React.FC = () => {
       if (!activeDatasetId) {
         return;
       }
+      // Clear the previous dataset's metrics so they are never shown under another dataset.
+      setDatasetEval(null);
       setIsLoadingDatasetEval(true);
       setEvaluationError(null);
       try {
