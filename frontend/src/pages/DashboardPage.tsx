@@ -304,7 +304,7 @@ export const DashboardPage: React.FC = () => {
             </div>
             <CardDescription>
               {predictionDistribution && activePredictions
-                ? `Model: ${activePredictions.model_id || activePredictions.model_version} • ${activePredictions.total_flows.toLocaleString()} flows classified (${activePredictions.malicious_count.toLocaleString()} malicious, ${activePredictions.benign_count.toLocaleString()} benign)`
+                ? `${activePredictions.forced_compatibility ? 'FORCED RUN, NOT VALID (missing features filled with training means) • ' : ''}Model: ${activePredictions.model_id || activePredictions.model_version} • ${activePredictions.total_flows.toLocaleString()} flows classified (${activePredictions.malicious_count.toLocaleString()} malicious, ${activePredictions.benign_count.toLocaleString()} benign)`
                 : targetDataset
                 ? `Source: ${targetDataset.name} • ${targetDataset.rowCount.toLocaleString()} flows`
                 : 'No dataset selected or available in workspace.'}

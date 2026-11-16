@@ -359,10 +359,20 @@ class MLService:
             return "Mirai-udpplain"
         return s
 
+    def neutral_fill_values(self) -> List[float]:
+        """Raw-space value per canonical feature that the active scaler maps to 0 (the
+        training mean): the least informative constant for a feature that is missing."""
+        mean = np.asarray(getattr(self.scaler, "mean_", np.zeros(len(self.feature_columns))), dtype=np.float64)
+        if getattr(self.scaler, "kind", "") == "log1p_standard":
+            return np.expm1(mean).tolist()          # log1p(expm1(m)) == m  -> scaled 0
+        return mean.tolist()
+
     def predict_dataframe(
         self,
         df: pd.DataFrame,
         actual_labels: Optional[List[Optional[str]]] = None,
+        force_incompatible: bool = False,
+        info: Optional[Dict[str, Any]] = None,
     ) -> Tuple[List[Dict[str, Any]], int]:
         """
         Validates schema using dataset adapters, aligns features without data leakage,
@@ -376,7 +386,34 @@ class MLService:
         # 1. Detect dataset type and validate compatibility through the Adapter Architecture
         from app.adapters.registry import adapter_registry
         adapter, report = adapter_registry.detect_adapter(df)
-        if not report.is_compatible_with_flmlp:
+        if not report.is_compatible_with_flmlp and force_incompatible:
+            # Explicit user override: fill every missing canonical feature with its
+            # training mean via the shared adapter. Outputs are flagged as invalid.
+            from sentinelfl.adapters import CICIoT2023Adapter as SharedCICAdapter, impute_for_inference
+            aligned = SharedCICAdapter().align(df, fill_missing=self.neutral_fill_values())
+            X_filled, _ = impute_for_inference(aligned.X)
+            X_scaled = np.asarray(self.scaler.transform(X_filled), dtype=np.float32)
+            if info is not None:
+                info.update({
+                    "forced_compatibility": True,
+                    "imputed_features": aligned.report.get("imputed_features", []),
+                    "dataset_name": report.dataset_name,
+                    "rejection_reason": report.rejection_reason,
+                })
+            try:
+                from app.services.audit_service import audit_service
+                audit_service.record_event(
+                    severity="WARN", category="DATASET",
+                    message=(f"FORCED inference on incompatible dataset '{report.dataset_name}': "
+                             f"{len(aligned.report.get('imputed_features', []))} of 39 features filled with training means."),
+                    component="MLService",
+                    details={"dataset_name": report.dataset_name,
+                             "imputed_features": aligned.report.get("imputed_features", [])},
+                )
+            except Exception:
+                pass
+            adapter_labels = None
+        elif not report.is_compatible_with_flmlp:
             try:
                 from app.services.audit_service import audit_service
                 audit_service.record_event(
@@ -394,7 +431,8 @@ class MLService:
             )
 
         # 2. Align and scale features through the verified adapter
-        X_scaled, adapter_labels, _ = adapter.align_and_preprocess(df, scaler=self.scaler)
+        if not (force_incompatible and not report.is_compatible_with_flmlp):
+            X_scaled, adapter_labels, _ = adapter.align_and_preprocess(df, scaler=self.scaler)
         if actual_labels is None and adapter_labels is not None:
             actual_labels = adapter_labels
 
@@ -528,6 +566,7 @@ class MLService:
         filename: str = "upload.csv",
         dataset_id: Optional[str] = None,
         dataset_name: Optional[str] = None,
+        force_incompatible: bool = False,
     ) -> BatchPredictionResponse:
         """
         Parses uploaded CSV bytes, isolates ground-truth target label if present,
@@ -557,7 +596,12 @@ class MLService:
             df_for_model = df_for_model.drop(columns=[label_col])
 
         # 2. Execute inference across all records
-        predictions, rejected_count = self.predict_dataframe(df_for_model, actual_labels=actual_labels)
+        forced_info: Dict[str, Any] = {}
+        predictions, rejected_count = self.predict_dataframe(
+            df_for_model, actual_labels=actual_labels,
+            force_incompatible=force_incompatible, info=forced_info,
+        )
+        is_forced = bool(forced_info.get("forced_compatibility"))
 
         flows: List[PredictionResult] = []
         malicious_count = 0
@@ -664,7 +708,8 @@ class MLService:
 
         # 3. Compute Genuine Evaluation Metrics if Ground-Truth Labels Exist
         evaluation_result: Optional[Dict[str, Any]] = None
-        if actual_labels and any(l is not None for l in actual_labels):
+        # Forced (feature-filled) predictions are never scored or stored as an evaluation.
+        if not is_forced and actual_labels and any(l is not None for l in actual_labels):
             evaluation_result = self.compute_evaluation_metrics(
                 actual_labels=actual_labels,
                 predictions=[f.predicted_class for f in flows],
@@ -691,6 +736,14 @@ class MLService:
             per_class_counts=per_class_counts,
             per_class_percentages=per_class_percentages,
             evaluation=evaluation_result,
+            forced_compatibility=is_forced,
+            imputed_features=forced_info.get("imputed_features", []),
+            compatibility_warning=(
+                f"NOT VALID: '{forced_info.get('dataset_name')}' is incompatible with the 39-feature model. "
+                f"{len(forced_info.get('imputed_features', []))} of 39 input features were missing and were "
+                "filled with training-set means, so these predictions do not reflect the data and must "
+                "not be reported as results."
+            ) if is_forced else None,
         )
 
         try:
@@ -727,8 +780,9 @@ class MLService:
         except Exception:
             pass
 
-        # 4. Cache prediction results for immediate state restoration
-        if dataset_id:
+        # 4. Cache prediction results for immediate state restoration (never forced runs,
+        #    so a later normal request cannot silently return feature-filled predictions)
+        if dataset_id and not is_forced:
             self.dataset_predictions[dataset_id] = response
             try:
                 cache_dir = settings.PROCESSED_CACHE_DIR / dataset_id

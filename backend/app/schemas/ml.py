@@ -70,4 +70,10 @@ class BatchPredictionResponse(BaseModel):
     per_class_counts: Dict[str, int] = Field(default_factory=dict)
     per_class_percentages: Dict[str, float] = Field(default_factory=dict)
     evaluation: Optional[Dict[str, Any]] = None
+    # Set only for explicit "run anyway" requests on incompatible datasets: missing features
+    # were filled with training means. Such predictions are not valid and are never cached
+    # or evaluated.
+    forced_compatibility: bool = False
+    imputed_features: List[str] = Field(default_factory=list)
+    compatibility_warning: Optional[str] = None
 

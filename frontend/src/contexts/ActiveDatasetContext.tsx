@@ -12,7 +12,7 @@ interface ActiveDatasetContextType {
   activePredictions: BatchClassificationResult | null;
   setActivePredictions: (predictions: BatchClassificationResult | null) => void;
   isClassifyingActive: boolean;
-  classifyActiveDataset: (modelId?: string) => Promise<BatchClassificationResult>;
+  classifyActiveDataset: (modelId?: string, forceIncompatible?: boolean) => Promise<BatchClassificationResult>;
   selectDatasetForAnalysis: (dataset: Dataset | null) => void;
   clearActiveDataset: () => void;
   isDatasetActive: (datasetId: string) => boolean;
@@ -41,7 +41,8 @@ export const ActiveDatasetProvider: React.FC<{ children: React.ReactNode }> = ({
   // Helper to safely set predictions and persist in session storage
   const setActivePredictions = useCallback((predictions: BatchClassificationResult | null) => {
     setActivePredictionsState(predictions);
-    if (activeDatasetId && predictions) {
+    if (activeDatasetId && predictions && !predictions.forced_compatibility) {
+      // Forced (feature-filled) runs are never persisted, even for this browser session.
       try {
         sessionStorage.setItem(`sentinelfl_active_predictions_${activeDatasetId}`, JSON.stringify(predictions));
       } catch (err) {
@@ -136,7 +137,7 @@ export const ActiveDatasetProvider: React.FC<{ children: React.ReactNode }> = ({
   }, [activeDatasetId, resolveActiveDataset]);
 
   // Centralized classification executor available to all pages
-  const classifyActiveDataset = useCallback(async (modelId?: string): Promise<BatchClassificationResult> => {
+  const classifyActiveDataset = useCallback(async (modelId?: string, forceIncompatible = false): Promise<BatchClassificationResult> => {
     if (!activeDataset) {
       throw new Error('No active dataset is selected.');
     }
@@ -145,7 +146,7 @@ export const ActiveDatasetProvider: React.FC<{ children: React.ReactNode }> = ({
     try {
       // Try backend direct classification
       try {
-        const res = await apiClient.classifyDataset(activeDataset.id, modelId);
+        const res = await apiClient.classifyDataset(activeDataset.id, modelId, forceIncompatible);
         setActivePredictions(res);
         return res;
       } catch (directErr) {
@@ -158,7 +159,7 @@ export const ActiveDatasetProvider: React.FC<{ children: React.ReactNode }> = ({
         const file = new File([blob], activeDataset.filename || `${activeDataset.name}.csv`, {
           type: 'text/csv',
         });
-        const res = await apiClient.predictCsv(file, modelId);
+        const res = await apiClient.predictCsv(file, modelId, forceIncompatible);
         setActivePredictions(res);
         return res;
       } else {

@@ -43,6 +43,10 @@ export interface BatchClassificationResult {
   per_class_counts: Record<string, number>;
   per_class_percentages: Record<string, number>;
   evaluation?: any;
+  /** True only for an explicit "run anyway" on an incompatible dataset (NOT valid results). */
+  forced_compatibility?: boolean;
+  imputed_features?: string[];
+  compatibility_warning?: string | null;
 }
 
 export interface DetectionFilter {

@@ -128,12 +128,22 @@ export const DetectionPage: React.FC = () => {
   // 39-feature raw vector simulation state
   const [rawFeatureJson, setRawFeatureJson] = useState<string>('{\n  "Flow Duration": 120.4,\n  "Tot Fwd Pkts": 480\n}');
 
+  // Incompatible-dataset rejection (offers "Run anyway") and forced-result warning state
+  const [incompatibleReason, setIncompatibleReason] = useState<string | null>(null);
+  const [forcedWarning, setForcedWarning] = useState<{ message: string; imputed: string[] } | null>(null);
+  const [showImputed, setShowImputed] = useState(false);
+
   // Synchronize flows from activePredictions whenever activePredictions or activeDataset changes
   useEffect(() => {
     const belongsToActive =
       !activePredictions?.dataset_id || !activeDataset || activePredictions.dataset_id === activeDataset.id;
     if (activePredictions && belongsToActive && activePredictions.flows && activePredictions.flows.length > 0) {
       setFlows(activePredictions.flows);
+      setForcedWarning(
+        activePredictions.forced_compatibility
+          ? { message: activePredictions.compatibility_warning || 'Predictions are NOT valid.', imputed: activePredictions.imputed_features || [] }
+          : null
+      );
       setBatchClassStats(activePredictions.per_class_counts || {});
       setBatchClassPercentages(activePredictions.per_class_percentages || {});
       setFailedFlowsCount(activePredictions.failed_count || 0);
@@ -147,8 +157,14 @@ export const DetectionPage: React.FC = () => {
       setBatchClassPercentages({});
       setFailedFlowsCount(0);
       setSelectedFlow(null);
+      setForcedWarning(null);
     }
   }, [activePredictions, activeDataset]);
+
+  // A new dataset gets a fresh compatibility check
+  useEffect(() => {
+    setIncompatibleReason(null);
+  }, [activeDataset?.id]);
 
   useEffect(() => {
     const loadModels = async () => {
@@ -170,7 +186,7 @@ export const DetectionPage: React.FC = () => {
   }, []);
 
   // Classify Active Dataset using full backend retrieval
-  const handlePredictActiveDataset = async () => {
+  const handlePredictActiveDataset = async (forceIncompatible = false) => {
     if (!activeDataset) {
       error('No Active Dataset', 'Please select an active dataset using the dataset selector first.');
       return;
@@ -178,7 +194,13 @@ export const DetectionPage: React.FC = () => {
 
     setIsClassifying(true);
     try {
-      const res = await classifyActiveDataset(selectedModelId);
+      const res = await classifyActiveDataset(selectedModelId, forceIncompatible);
+      setIncompatibleReason(null);
+      setForcedWarning(
+        res.forced_compatibility
+          ? { message: res.compatibility_warning || 'Predictions are NOT valid.', imputed: res.imputed_features || [] }
+          : null
+      );
       setFlows(res.flows);
       setBatchClassStats(res.per_class_counts || {});
       setBatchClassPercentages(res.per_class_percentages || {});
@@ -189,7 +211,12 @@ export const DetectionPage: React.FC = () => {
         setSelectedFlow(res.flows[0]);
       }
 
-      success(
+      if (res.forced_compatibility) {
+        error(
+          'Forced Run: Results NOT Valid',
+          `${(res.imputed_features || []).length} of 39 features were missing and filled with training means.`
+        );
+      } else success(
         'Active Dataset Classified',
         `Analysed ${res.total_flows.toLocaleString()} flows from "${activeDataset.name}": ${res.malicious_count.toLocaleString()} malicious, ${res.benign_count.toLocaleString()} benign.`
       );
@@ -198,7 +225,10 @@ export const DetectionPage: React.FC = () => {
       setBatchClassStats({});
       setBatchClassPercentages({});
       setSelectedFlow(null);
-      error('Dataset Inference Failed', err.message || 'Could not classify active dataset flows.');
+      setForcedWarning(null);
+      const msg: string = err.message || 'Could not classify active dataset flows.';
+      setIncompatibleReason(!forceIncompatible && /incompatible/i.test(msg) ? msg : null);
+      error('Dataset Inference Failed', msg);
     } finally {
       setIsClassifying(false);
     }
@@ -467,6 +497,28 @@ export const DetectionPage: React.FC = () => {
       {/* Persistent Global Active Dataset Selector */}
       <ActiveDatasetSelector />
 
+      {forcedWarning && flows.length > 0 && (
+        <div className="rounded-lg border-2 border-red-500 bg-red-50 p-4 text-sm text-red-900" role="alert">
+          <p className="font-bold uppercase tracking-wide">Forced run: these predictions are not valid</p>
+          <p className="mt-1">{forcedWarning.message}</p>
+          <p className="mt-1 text-xs">
+            Not saved as an evaluation, not cached. Do not use these numbers in reports or comparisons.
+          </p>
+          {forcedWarning.imputed.length > 0 && (
+            <button
+              type="button"
+              className="mt-2 text-xs font-semibold underline"
+              onClick={() => setShowImputed(v => !v)}
+            >
+              {showImputed ? 'Hide' : 'Show'} the {forcedWarning.imputed.length} filled-in features
+            </button>
+          )}
+          {showImputed && (
+            <p className="mt-1 font-mono text-[11px] break-words">{forcedWarning.imputed.join(', ')}</p>
+          )}
+        </div>
+      )}
+
       {/* Control Bar: Model Selector, Actions, Telemetry */}
       <Card className="p-4 sm:p-5">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
@@ -527,7 +579,7 @@ export const DetectionPage: React.FC = () => {
                 leftIcon={<Play className="w-3.5 h-3.5 fill-current" />}
                 disabled={isClassifying || isUploadingCsv}
                 isLoading={isClassifying}
-                onClick={handlePredictActiveDataset}
+                onClick={() => handlePredictActiveDataset()}
                 title={`Classify all ${activeDataset.rowCount.toLocaleString()} flows from active dataset "${activeDataset.name}"`}
               >
                 Classify Active Dataset ({activeDataset.name})
@@ -702,6 +754,20 @@ export const DetectionPage: React.FC = () => {
             </p>
           </div>
         </Card>
+      ) : flows.length === 0 && incompatibleReason && activeDataset ? (
+        <Card>
+          <div className="p-6 space-y-3 text-sm">
+            <p className="font-semibold text-charcoal-900">Dataset not compatible with the trained model</p>
+            <p className="text-charcoal-600">{incompatibleReason}</p>
+            <p className="text-charcoal-600">
+              You can still run the model by filling every missing feature with its training-set average.
+              The output will not reflect this data: it is for demonstration only and will be marked as invalid.
+            </p>
+            <Button variant="outline" onClick={() => handlePredictActiveDataset(true)}>
+              Run anyway (not scientifically valid)
+            </Button>
+          </div>
+        </Card>
       ) : flows.length === 0 ? (
         <EmptyState
           title="No Flow Predictions Available"
@@ -711,7 +777,7 @@ export const DetectionPage: React.FC = () => {
               : 'Select an active dataset above or upload a CSV to run live PyTorch model inference.'
           }
           actionLabel={activeDataset ? `Classify Active Dataset (${activeDataset.name})` : 'Test Single Flow'}
-          onAction={activeDataset ? handlePredictActiveDataset : () => setIsSingleFlowModalOpen(true)}
+          onAction={activeDataset ? () => handlePredictActiveDataset() : () => setIsSingleFlowModalOpen(true)}
         />
       ) : filteredFlows.length === 0 ? (
         <EmptyState

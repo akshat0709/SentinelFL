@@ -208,7 +208,7 @@ export class ApiClient {
   /**
    * Uploads a CSV for real-time batch classification by the MLP model.
    */
-  async predictCsv(file: File, modelId?: string): Promise<BatchClassificationResult> {
+  async predictCsv(file: File, modelId?: string, forceIncompatible = false): Promise<BatchClassificationResult> {
     const headers = await getAuthHeaders();
     const formData = new FormData();
     formData.append('file', file);
@@ -216,6 +216,9 @@ export class ApiClient {
     const url = new URL(`${this.baseUrl}/api/v1/models/predict-csv`);
     if (modelId) {
       url.searchParams.set('model_id', modelId);
+    }
+    if (forceIncompatible) {
+      url.searchParams.set('force_incompatible', 'true');
     }
 
     const res = await fetch(url.toString(), {
@@ -268,19 +271,25 @@ export class ApiClient {
       per_class_counts: data.per_class_counts || {},
       per_class_percentages: data.per_class_percentages || {},
       evaluation: data.evaluation,
+      forced_compatibility: data.forced_compatibility || false,
+      imputed_features: data.imputed_features || [],
+      compatibility_warning: data.compatibility_warning || null,
     };
   }
 
   /**
    * Classifies all records in an uploaded workspace dataset directly on the backend.
    */
-  async classifyDataset(datasetId: string, modelId?: string): Promise<BatchClassificationResult> {
+  async classifyDataset(datasetId: string, modelId?: string, forceIncompatible = false): Promise<BatchClassificationResult> {
     const headers = await getAuthHeaders();
     (headers as Record<string, string>)['Content-Type'] = 'application/json';
 
     const url = new URL(`${this.baseUrl}/api/v1/models/classify-dataset/${encodeURIComponent(datasetId)}`);
     if (modelId) {
       url.searchParams.set('model_id', modelId);
+    }
+    if (forceIncompatible) {
+      url.searchParams.set('force_incompatible', 'true');
     }
 
     const res = await fetch(url.toString(), {
@@ -332,6 +341,9 @@ export class ApiClient {
       per_class_counts: data.per_class_counts || {},
       per_class_percentages: data.per_class_percentages || {},
       evaluation: data.evaluation,
+      forced_compatibility: data.forced_compatibility || false,
+      imputed_features: data.imputed_features || [],
+      compatibility_warning: data.compatibility_warning || null,
     };
   }
 
@@ -387,6 +399,9 @@ export class ApiClient {
         per_class_counts: data.per_class_counts || {},
         per_class_percentages: data.per_class_percentages || {},
         evaluation: data.evaluation,
+        forced_compatibility: data.forced_compatibility || false,
+        imputed_features: data.imputed_features || [],
+        compatibility_warning: data.compatibility_warning || null,
       };
     } catch {
       return null;

@@ -141,15 +141,32 @@ class CICIoT2023Adapter(BaseAdapter):
             )
         return report
 
-    def align(self, df: pd.DataFrame, label_column: Optional[str] = None) -> AlignedData:
+    def align(self, df: pd.DataFrame, label_column: Optional[str] = None,
+              fill_missing: Optional[Sequence[float]] = None) -> AlignedData:
+        """Map ``df`` to the canonical 39 features.
+
+        ``fill_missing`` (one value per canonical feature, e.g. the training means) is an
+        explicit, opt-in override for datasets that lack features: missing columns are filled
+        with those constants instead of raising. Results produced this way are NOT valid
+        model outputs; ``report["forced_compatibility"]`` and ``report["imputed_features"]``
+        record it so every consumer can label them.
+        """
         report = self.validate(df, label_column)
+        mapping, missing = self._column_map(df)
         if not report["is_compatible"]:
-            raise DatasetCompatibilityError(report["rejection_reason"])
-        mapping, _ = self._column_map(df)
-        X = pd.DataFrame(
-            {f: pd.to_numeric(df[mapping[f]], errors="coerce") for f in FEATURES},
-            index=df.index,
-        ).astype(np.float64)
+            if fill_missing is None:
+                raise DatasetCompatibilityError(report["rejection_reason"])
+            if len(fill_missing) != len(FEATURES):
+                raise ValueError("fill_missing must provide one value per canonical feature")
+        report["forced_compatibility"] = bool(missing) and fill_missing is not None
+        report["imputed_features"] = list(missing) if fill_missing is not None else []
+        cols = {}
+        for i, f in enumerate(FEATURES):
+            if f in mapping:
+                cols[f] = pd.to_numeric(df[mapping[f]], errors="coerce")
+            else:
+                cols[f] = pd.Series(float(fill_missing[i]), index=df.index)
+        X = pd.DataFrame(cols, index=df.index).astype(np.float64)
         vals = X.to_numpy()
         bad = ~np.isfinite(vals) | (np.abs(np.nan_to_num(vals, nan=0.0, posinf=0.0, neginf=0.0)) > 1e300)
         report["non_finite_cells"] = int(bad.sum())

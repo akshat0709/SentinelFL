@@ -132,3 +132,37 @@ def test_batch_predictions_never_invent_endpoints_or_metrics():
             assert abs(v - float(df.iloc[i][k])) < 1e-6           # raw value from the file
         expected_proto = next((p for p in ("TCP", "UDP", "ICMP") if df.iloc[i][p] > 0), None)
         assert flow["protocol"] == expected_proto
+
+
+def test_forced_inference_on_incompatible_dataset_is_flagged_and_never_cached(tmp_path, monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "PROCESSED_CACHE_DIR", tmp_path)
+    client = TestClient(app)
+    nbaiot = REPO / "ml" / "data" / "samples" / "n_iot_sample.csv"
+    with open(nbaiot, "rb") as f:
+        normal = client.post("/api/v1/models/predict-csv", files={"file": ("n.csv", f, "text/csv")})
+    assert normal.status_code == 400 and "incompatible" in normal.json()["detail"]
+
+    with open(nbaiot, "rb") as f:
+        forced = client.post("/api/v1/models/predict-csv?force_incompatible=true",
+                             files={"file": ("n.csv", f, "text/csv")})
+    assert forced.status_code == 200, forced.text
+    body = forced.json()
+    assert body["forced_compatibility"] is True
+    assert len(body["imputed_features"]) == 39               # N-BaIoT shares none of the 39
+    assert "NOT VALID" in body["compatibility_warning"]
+    assert body["evaluation"] is None                         # never scored
+    assert body["total_flows"] == len(pd.read_csv(nbaiot))
+    assert not any(tmp_path.iterdir())                        # nothing cached
+
+    # A compatible dataset is unaffected by the flag
+    with open(SAMPLE, "rb") as f:
+        ok = client.post("/api/v1/models/predict-csv?force_incompatible=true",
+                         files={"file": ("s.csv", f, "text/csv")})
+    assert ok.status_code == 200 and ok.json()["forced_compatibility"] is False
+
+
+def test_neutral_fill_values_map_to_zero_after_scaling():
+    vals = np.array([ml_service.neutral_fill_values()])
+    scaled = ml_service.scaler.transform(pd.DataFrame(vals, columns=ml_service.feature_columns))
+    assert np.allclose(scaled, 0.0, atol=1e-4)

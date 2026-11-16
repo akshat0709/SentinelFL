@@ -187,7 +187,12 @@ async def predict_single_flow(request: SingleFlowPredictRequest):
 
 
 @router.post("/predict-csv", response_model=BatchPredictionResponse)
-async def predict_batch_csv(file: UploadFile = File(...)):
+async def predict_batch_csv(
+    file: UploadFile = File(...),
+    force_incompatible: bool = Query(
+        False, description="Run anyway on an incompatible dataset: missing features are filled with "
+                           "training means and the response is flagged as NOT VALID."),
+):
     """
     Accepts an uploaded CSV containing network traffic flows, validates that expected features
     are present, executes batch inference with the trained model, and returns predicted classes
@@ -207,7 +212,8 @@ async def predict_batch_csv(file: UploadFile = File(...)):
 
     try:
         content = await file.read()
-        res = ml_service.predict_csv_bytes(content, filename=file.filename, dataset_name=file.filename)
+        res = ml_service.predict_csv_bytes(content, filename=file.filename, dataset_name=file.filename,
+                                           force_incompatible=force_incompatible)
         return res
     except ValueError as ve:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
@@ -242,6 +248,7 @@ async def classify_active_dataset(
     dataset_id: str,
     model_id: Optional[str] = Query(None),
     force_refresh: bool = Query(False),
+    force_incompatible: bool = Query(False, description="See /predict-csv. Never cached or evaluated."),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
     """
@@ -256,7 +263,7 @@ async def classify_active_dataset(
         )
 
     # If cached predictions exist and caller does not force recomputation, return immediately
-    if not force_refresh:
+    if not force_refresh and not force_incompatible:
         cached = ml_service.get_dataset_predictions(dataset_id)
         if cached:
             logger.info(f"Returning cached predictions for dataset '{dataset_id}' ({cached.total_flows} flows)")
@@ -313,6 +320,7 @@ async def classify_active_dataset(
             filename=f"{dataset_display_name}.csv",
             dataset_id=dataset_id,
             dataset_name=dataset_display_name,
+            force_incompatible=force_incompatible,
         )
         return res
     except ValueError as ve:
