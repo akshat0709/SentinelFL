@@ -39,7 +39,7 @@ import { downloadDatasetBlob } from '@/lib/datasetService';
 import { NetworkFlowRecord, ProtocolType, RiskLevel } from '@/types/detection';
 import { ModelItem } from '@/types/model';
 import { apiClient } from '@/api/client';
-import { AttackVerdict } from '@/components/detection/AttackVerdict';
+import { AttackVerdict, ATTACK_INFO } from '@/components/detection/AttackVerdict';
 
 const MODEL_CLASSES = [
   'Benign',
@@ -70,6 +70,14 @@ const fmtEndpoint = (ip?: string | null, port?: number | null): string =>
   ip ? (port != null ? `${ip}:${port}` : ip) : NOT_IN_DATA;
 const fmtNum = (v: number): string =>
   Math.abs(v) >= 1000 ? v.toLocaleString(undefined, { maximumFractionDigits: 2 }) : String(Number(v.toPrecision(6)));
+
+/** Never show a rounded-up "100.0%": a softmax probability is always below 1. */
+const fmtConfidence = (c: number): string => {
+  const p = c * 100;
+  if (p >= 99.995) return '>99.99%';
+  if (p >= 99.95) return `${p.toFixed(2)}%`;
+  return `${p.toFixed(1)}%`;
+};
 
 export const DetectionPage: React.FC = () => {
   const { success, info, error } = useToast();
@@ -319,12 +327,12 @@ export const DetectionPage: React.FC = () => {
       if (newFlow.isMalicious) {
         success(
           'PyTorch Inference: Attack Detected',
-          `Classified as ${newFlow.predictedClass} with ${(newFlow.confidence * 100).toFixed(1)}% confidence.`
+          `Classified as ${newFlow.predictedClass} with ${fmtConfidence(newFlow.confidence)} confidence.`
         );
       } else {
         info(
           'PyTorch Inference: Normal Traffic',
-          `Traffic pattern verified as ${newFlow.predictedClass} with ${(newFlow.confidence * 100).toFixed(1)}% confidence.`
+          `Traffic pattern verified as ${newFlow.predictedClass} with ${fmtConfidence(newFlow.confidence)} confidence.`
         );
       }
     } catch (err: any) {
@@ -971,7 +979,7 @@ export const DetectionPage: React.FC = () => {
                       )}
                     </td>
                     <td className="py-2 px-3 font-semibold text-charcoal-900">
-                      {(flow.confidence * 100).toFixed(1)}%
+                      {fmtConfidence(flow.confidence)}
                     </td>
                     <td className="py-2 px-3 font-sans">
                       <span
@@ -1079,15 +1087,24 @@ export const DetectionPage: React.FC = () => {
                   Classification Result
                 </span>
                 <div className="text-base font-bold text-charcoal-900 mt-0.5 font-sans">
+                  {ATTACK_INFO[selectedFlow.predictedClass]?.title || (selectedFlow.predictedClass === 'Benign' ? 'Benign (normal traffic)' : selectedFlow.predictedClass)}
+                </div>
+                <div className="text-[11px] text-charcoal-500 font-mono mt-0.5">
                   {selectedFlow.predictedClass}
+                  {ATTACK_INFO[selectedFlow.predictedClass] && ` · ${ATTACK_INFO[selectedFlow.predictedClass].family}`}
                 </div>
               </div>
               <div className="flex items-center gap-2">
                 <Badge variant={selectedFlow.isMalicious ? 'red' : 'forest'} size="md">
-                  {(selectedFlow.confidence * 100).toFixed(1)}% Confidence
+                  {fmtConfidence(selectedFlow.confidence)} Confidence
                 </Badge>
               </div>
             </div>
+            {ATTACK_INFO[selectedFlow.predictedClass] && (
+              <p className="-mt-3 px-1 text-[11px] text-charcoal-600 leading-relaxed">
+                {ATTACK_INFO[selectedFlow.predictedClass].description}
+              </p>
+            )}
 
             {/* Actual Ground Truth vs Prediction Comparison */}
             {selectedFlow.actualLabel && (

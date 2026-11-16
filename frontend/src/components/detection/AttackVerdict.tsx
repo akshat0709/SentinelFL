@@ -134,7 +134,7 @@ export const AttackVerdict: React.FC<{ flows: NetworkFlowRecord[]; datasetName?:
                   <td className="py-1 pr-3">{ATTACK_INFO[r.cls]?.family || '—'}</td>
                   <td className="py-1 pr-3 text-right font-mono">{r.n.toLocaleString()}</td>
                   <td className="py-1 pr-3 text-right font-mono">{pct(r.share)}</td>
-                  <td className="py-1 pr-3 text-right font-mono">{pct(r.meanConf)}</td>
+                  <td className="py-1 pr-3 text-right font-mono">{r.meanConf >= 0.99995 ? '>99.99%' : `${(r.meanConf * 100).toFixed(r.meanConf >= 0.9995 ? 2 : 1)}%`}</td>
                   <td className="py-1 text-right font-mono">{r.labelled ? `${r.matched}/${r.labelled}` : 'no labels'}</td>
                 </tr>
               ))}
