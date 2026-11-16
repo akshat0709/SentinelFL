@@ -152,11 +152,12 @@ fewer than 2 classes or < 20 rows/client remain. `data_source` is stored with th
 (`data_source.json`) and shown in the UI; the page shows the job's own run, never the saved
 benchmark, after training.
 
-**Attack verdict (Detection page, `components/detection/AttackVerdict.tsx`):** dataset-level
-summary derived only from per-flow predictions: < 5 % malicious → no attack; top attack ≥ 80 %
-of malicious flows → single attack (named, with description); otherwise the most common attack is named
-as the "Main attack" with its share, plus a
-ranked table, mean confidence, and agreement with file labels when present.
+**Attack verdict (Detection page, `components/detection/AttackVerdict.tsx`, `computeVerdict`):**
+dataset-level summary derived only from per-flow predictions. < 5 % flows malicious → no attack.
+Votes = sum of per-flow confidence. Family (DDoS vs Mirai botnet) is decided first (clear if the
+top family has ≥ 1.5× the votes of the next, else "mixed"); a single attack is named only if it has
+≥ 1.5× the votes of the runner-up, otherwise all attacks within that margin (max 3) are co-main.
+Tested in `frontend/src/tests/attackVerdict.test.ts`.
 
 ---
 
