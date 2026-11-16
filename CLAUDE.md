@@ -1,9 +1,13 @@
 # CLAUDE.md — SentinelFL (MiniProjectBotnet)
 
 Guidance for Claude (and humans) working in this repository. Read this before changing code,
-numbers in the UI, or experiment results.
+numbers in the UI, or experiment results. Section 12 is a log of everything that broke during
+development and how it was fixed — check it before debugging something that "used to work".
 
-- **Repo:** https://github.com/veervishal-dubey/MiniProjectBotnet
+- **Upstream repo:** https://github.com/veervishal-dubey/MiniProjectBotnet
+- **Working repo (deploy from here):** https://github.com/akshat0709/SentinelFL
+  (local clone: `~/Desktop/SentinelFL`; remote `origin`. As of 16 Nov 2026 it is still **empty** —
+  every push attempt failed; see §12.)
 - **Live frontend:** https://sentinelfl.vercel.app/ (Vercel, Vite SPA)
 - **Research notebooks (source of the real FL results):** Google Drive,
   `MyDrive/Mini Project CSY/FL_Project/` — main notebook `FLipynb` (Colab), cells 1–8.
@@ -19,8 +23,9 @@ SentinelFL is a 7-class IoT botnet / DDoS flow classifier trained with **Federat
    scaler, Flower-based FedAvg simulation, centralized baseline. This is where the real results
    come from.
 2. **Web platform** (`frontend/` + `backend/`): React dashboard + FastAPI service for dataset
-   upload/validation, preprocessing, single-flow and batch detection, evaluation, and a small
-   in-process FedAvg demo. Auth/storage via Supabase, with an offline "Local Researcher" demo mode.
+   upload/validation, preprocessing, single-flow and batch detection with a dataset-level
+   **attack verdict**, evaluation, and in-process FedAvg training (on the benchmark cache or on an
+   uploaded dataset). Auth/storage via Supabase, with an offline "Local Researcher" mode.
 
 ### What "adapter" means here (important)
 "Adapter-based architecture" = the **software Adapter pattern for datasets**, NOT neural adapter
@@ -29,27 +34,33 @@ identifies a CSV schema, validates it, and maps it to the canonical 39-feature /
 
 **One shared adapter for every model.** The CIC IoT 2023 adapter lives in
 `federated/sentinelfl/adapters.py` and is used by: the training cache builder, centralized
-training, FedAvg, local-only training, XGBoost, `ModelBundle` inference, and the backend
-(`backend/app/adapters/cic_iot_2023.py` keeps its API but delegates alignment + label mapping to
-it). After alignment, cleaning is explicit and use-case specific:
+training, FedAvg (Colab and backend), local-only training, XGBoost, `ModelBundle` inference, and
+the backend (`backend/app/adapters/cic_iot_2023.py` keeps its API but delegates alignment + label
+mapping to it). After alignment, cleaning is explicit and use-case specific:
 `clean_for_training` (drop NaN rows, exact duplicates, label conflicts — identical to FLipynb
-cell 3) vs `impute_for_inference` (per-column median fill, previous backend behaviour).
+cell 3) vs `impute_for_inference` (per-column median fill).
 
 Backend registry (`backend/app/adapters/`):
 
 | Adapter | File | FLMLP inference |
 |---|---|---|
-| CIC IoT 2023 | `cic_iot_2023.py` | Supported (needs all 39 features; no zero-imputation) |
+| CIC IoT 2023 | `cic_iot_2023.py` | Supported (needs all 39 features) |
 | Edge-IIoTset | `edge_iiotset.py` | Identified, then **rejected** with a diagnostic |
 | N-BaIoT / N-IoT | `n_iot.py` | Identified (115 decay-window stats), then **rejected** |
 
-`registry.py` tries adapters in order and falls back to CIC IoT 2023 validation. Do not make
-incompatible datasets "work" by imputing or aliasing features — rejection is intended behaviour.
-The only exception is the explicit, user-triggered **"Run anyway"** (`force_incompatible=true` on
-`/models/predict-csv` and `/models/classify-dataset`): missing features are filled with training
-means, the response carries `forced_compatibility`/`imputed_features`/`compatibility_warning`, a
-forced evaluation scores only rows whose label is exactly one of the 7 classes (`is_valid: false`),
-and nothing forced is cached, saved to evaluation history, exported or used for training.
+Rejection is intended behaviour: those datasets lack the 39 features (N-BaIoT shares none) and
+use attack classes the model was never trained on (`mirai_scan`, `bashlite_combo`, `Ransomware`,
+`DDoS_UDP`, …). Do not make them "work" by imputing or aliasing features.
+
+**Only exception — explicit "Run anyway"** (`force_incompatible=true` on `/models/predict-csv`
+and `/models/classify-dataset`, button on Detection and Evaluation after a rejection):
+missing features are filled with training means (`ml_service.neutral_fill_values()`, which scale
+to exactly 0); the response carries `forced_compatibility`, `imputed_features`,
+`compatibility_warning`; a forced evaluation scores only rows whose label is *exactly* one of the
+7 classes (strict `normalize_label`) and is marked `is_valid: false`. Nothing forced is cached,
+saved to evaluation history, exported, persisted in sessionStorage, or used for training; each
+forced run is audited as a WARN event. Expect meaningless output (e.g. every Edge-IIoTset row →
+DDoS-SYN).
 
 ---
 
@@ -59,7 +70,8 @@ and nothing forced is cached, saved to evaluation history, exported or used for 
 Mirai-greip_flood, Mirai-udpplain`
 
 **39 features (exact order)** — source of truth is `federated/fl_core.py::FEATURES`, identical to
-`CANONICAL_39_FEATURES` in `backend/app/adapters/cic_iot_2023.py` and `ml/artifacts/feature_columns.joblib`:
+`CANONICAL_39_FEATURES` in `backend/app/adapters/cic_iot_2023.py`,
+`ml/artifacts/feature_columns.joblib` and `federated/cache/clean_meta.json["features"]`:
 
 ```
 psh_flag_number, IAT, ARP, cwr_flag_number, Min, syn_flag_number, ece_flag_number, Max,
@@ -67,8 +79,7 @@ Tot size, DNS, fin_flag_number, ack_flag_number, Std, rst_flag_number, Telnet, H
 rst_count, Variance, HTTP, ICMP, Protocol Type, Tot sum, AVG, fin_count, IRC, IGMP, IPv,
 Number, TCP, SSH, UDP, Time_To_Live, SMTP, LLC, Rate, DHCP, ack_count, syn_count, HTTPS
 ```
-> README §4.1 lists a *different* 39-feature set (Duration, Srate, Drate, Urg Count, Magnitude…).
-> That list is wrong; trust the code.
+> README §4.1 once listed a different feature set (Duration, Srate, Drate…). Trust the code.
 
 **Model `FLMLP`:** 39 → 128 → 64 → 32 → 7, ReLU, Dropout 0.2 after the first two hidden layers,
 no BatchNorm (FedAvg-safe). Linear layers at `network.0/3/6/8`. **15,687 parameters**
@@ -76,10 +87,9 @@ no BatchNorm (FedAvg-safe). Linear layers at `network.0/3/6/8`. **15,687 paramet
 `backend/app/services/ml_service.py` — keep them identical.
 
 `ml/artifacts/mlp_model.pth` is a dict: `model_state_dict`, `input_features` (39),
-`num_classes` (7), `hidden_layers` ([128, 64, 32]). It must be loaded into `FLMLP` (with the
-Dropout layers) via `checkpoint["model_state_dict"]`. A plain Linear/ReLU stack without Dropout
-puts layers at indices 0/2/4/6 and fails with missing/unexpected-key errors (seen in
-`Final MLP.ipynb`, cell 2).
+`num_classes` (7), `hidden_layers` ([128, 64, 32]). Load it into `FLMLP` (with the Dropout
+layers) via `checkpoint["model_state_dict"]`; a plain Linear/ReLU stack puts layers at 0/2/4/6
+and fails with missing/unexpected keys (seen in `Final MLP.ipynb`, cell 2).
 
 ---
 
@@ -90,15 +100,15 @@ Two scalers exist and must never be mixed:
 | Model | Preprocessing after the adapter |
 |---|---|
 | `ml/artifacts/mlp_model.pth` (legacy centralized MLP, trained before dedup) | `scaler.joblib` (sklearn `StandardScaler`, no log1p) |
-| Every model from the FL pipeline (FedAvg, centralized baseline, local-only) | `log1p` then federated mean/std (`sentinelfl.Log1pStandardScaler`, = `fl_core.transform`) |
+| Every model from the FL pipeline (FedAvg, centralized baseline, local-only, backend FL jobs) | `log1p` then federated mean/std (`sentinelfl.Log1pStandardScaler`, = `fl_core.transform`) |
 
 `sentinelfl.ModelBundle` packages `model.pt` + `scaler.json`/`scaler.joblib` + `bundle.json`
-(adapter name, features, classes, training config, val/test metrics, provenance). Serve any
-bundle with `ACTIVE_MODEL_BUNDLE=<bundle dir>`; `ml_service.load_bundle()` swaps in the bundle's
-weights **and** scaler, and every prediction route goes through the same adapter. Without the
-variable the legacy artifacts load (`ModelBundle.from_legacy_artifacts` wraps them identically —
-verified prediction-for-prediction against the backend). Raw `.pt` files in `federated/runs/` are
-NOT bundles; load them only together with `federated/preprocessing/<scenario>_scaler.json`.
+(adapter, features, classes, training config, data source, metrics, provenance). Serve any bundle
+with `ACTIVE_MODEL_BUNDLE=<bundle dir>`; `ml_service.load_bundle()` swaps weights **and** scaler.
+Without it the legacy artifacts load (`ModelBundle.from_legacy_artifacts`, verified
+prediction-for-prediction). Raw `.pt` files in `federated/runs/` are NOT bundles; load them only
+with `federated/preprocessing/<scenario>_scaler.json`. Every backend FL job exports a bundle to
+`backend/storage/fl_runs/<job>/bundle`.
 
 ---
 
@@ -106,67 +116,63 @@ NOT bundles; load them only together with `federated/preprocessing/<scenario>_sc
 
 **`federated/fl_core.py`** (shared by Colab, backend, scripts):
 - `local_stats` (client) → `(n, Σz, Σz²)` of `log1p(X)`; `aggregate_stats` (server) → mean/std.
-  Only aggregates leave a client. Matches pooled scaling to ~1e-7.
-- `train_local`: Adam (lr 1e-3), batch 512, CrossEntropy, optimizer **recreated every call**
-  (state resets each round), seeded dropout + shuffling. `class_weights` supported but unused.
-- `weighted_average`: FedAvg weighted by client sample count. **All parameters are shared**;
-  nothing is kept local.
+  Only aggregates leave a client.
+- `train_local`: Adam (lr 1e-3), batch 512, CrossEntropy, optimizer **recreated every call**,
+  seeded dropout + shuffling. `class_weights` supported but unused.
+- `weighted_average`: FedAvg weighted by client sample count. **All parameters are shared.**
 
 **Research setup (Colab `FLipynb`, cells 3–8):**
-- **The cache used by every FL run** was built from **26 CSV files** (no `Benign2.csv`):
-  2,756,340 raw rows → 104 NaN/inf rows dropped → exact duplicates removed → **1,756,693 rows**
-  (`federated/cache/X_clean.npy`). A later notebook run saw 27 files (2,886,172 → 1,886,247
-  incl. `Benign2.csv`) but did **not** overwrite the cache (`OVERWRITE_CACHE=False`), so
-  `Benign2.csv` is not in any split or result. Rebuilding the cache would change every split.
-- **K = 10 clients** (not 3, not 5), each holding out 10 % local validation per class.
-- Split A: stratified random 15 % test. Split B (`B_filehold_iid`): last capture file per class
-  + 15 % random Benign as test (unseen captures).
-- Scenarios: `A_iid`, `A_dir0.5`, `A_dir0.1` (Dirichlet per class, Benign floor 0.5,
-  min 2,000 rows/client), `B_filehold_iid`. Seed 42.
-- Flower (`flwr` Message API) simulation, `FedAvg(fraction_train=1.0)`, 20 rounds, 1 local epoch.
-  FedAvg output verified against manual `weighted_average` (max diff 1.19e-7).
-- Communication: 15,687 × 4 B = 62,748 B per client per direction per round
-  → 10 clients × 2 × 20 rounds ≈ **25.1 MB per run**.
+- Cache built from **26 CSV files** (no `Benign2.csv`): 2,756,340 raw rows → **1,756,693 rows**
+  after NaN/duplicate/label-conflict removal (`federated/cache/X_clean.npy`, 274 MB; class
+  counts in `clean_meta.json`). A later run saw 27 files but did not overwrite the cache.
+- **K = 10 clients**, 10 % local validation per class. Split A: stratified 15 % test. Split B
+  (`B_filehold_iid`): last capture file per class + 15 % Benign as test.
+- Scenarios `A_iid`, `A_dir0.5`, `A_dir0.1` (Dirichlet per class, Benign floor 0.5, ≥ 2,000
+  rows/client), `B_filehold_iid`. Seed 42. Flower FedAvg, 20 rounds, 1 local epoch.
+- Communication: 62,748 B per client per direction per round → ≈ **25.1 MB per run**.
 
-**Shared pipeline `federated/sentinelfl/`** (used for all new results):
-`contract` (re-exports fl_core FEATURES/CLASSES + label aliases) · `adapters` · `scalers` ·
-`model` (re-exports FLMLP/train_local/weighted_average from fl_core) · `partition`
-(cell-4 partitioners, split I/O, integrity check, `stratified_subsample`) · `training`
-(`run_fedavg`, `run_centralized`, `run_local_only` — same init, same train_local, best-val
-selection, byte accounting) · `metrics` · `bundle` · `cache` (build/verify cache through the
-adapter) · `experiments` (resumable grid runner, one-shot test eval, summaries, `benchmarks.json`).
-`run_fedavg` equals the Flower FedAvg (same seeds `seed + 1000*round + client`; unit-tested
-against manual `weighted_average`). Notebook cell 6 compares it with the original Flower run.
+**Shared pipeline `federated/sentinelfl/`:** `contract` · `adapters` · `scalers` · `model` ·
+`partition` (partitioners, split I/O, integrity check, `stratified_subsample`) · `training`
+(`run_fedavg`, `run_centralized`, `run_local_only`) · `metrics` · `bundle` · `cache` ·
+`experiments` (resumable grid runner, one-shot test eval, `benchmarks.json`).
 
-**Backend `fl_service.py`** is a pure-PyTorch demo loop for the UI. It needs
-`federated/cache/X_clean.npy`, `y_clean.npy` (gitignored) and `federated/splits/*.npz`
-(not in repo), so `/api/v1/federated/train` fails on a fresh clone. It now draws **seeded,
-class-stratified** subsamples (default 5,000/client) instead of the first N sorted indices, and
-exports each job as a servable bundle (`storage/fl_runs/<job>/bundle`). Demo jobs are subsampled:
-never report them as results.
-
-With `dataset_id` (FL page "Train on: <active dataset>", auth required) the job trains on the
-uploaded CSV instead: shared adapter → `clean_for_training` → stratified 20 % test → IID (or
-Dirichlet for `A_dir*`) partitions over K clients → 10 % local val. Rejected with a reason when
-fewer than 2 classes or < 20 rows/client remain. `data_source` is stored with the job
-(`data_source.json`) and shown in the UI; the page shows the job's own run, never the saved
-benchmark, after training.
-
-**Attack verdict (Detection page, `components/detection/AttackVerdict.tsx`, `computeVerdict`):**
-dataset-level summary derived only from per-flow predictions. < 5 % flows malicious → no attack.
-Votes = sum of per-flow confidence. Family (DDoS vs Mirai botnet) is decided first (clear if the
-top family has ≥ 1.5× the votes of the next, else "mixed"); a single attack is named only if it has
-≥ 1.5× the votes of the runner-up, otherwise all attacks within that margin (max 3) are co-main.
-Tested in `frontend/src/tests/attackVerdict.test.ts`.
+**Backend `fl_service.py`** (`POST /api/v1/federated/train`) has two data sources:
+1. **Benchmark cache** (default): needs `federated/cache/X_clean.npy`, `y_clean.npy`,
+   `clean_meta.json` (gitignored, 274 MB, download from Drive `FL_Project/cache`) and
+   `federated/splits/*.npz` (committed, ~10 MB). Seeded, class-stratified subsamples
+   (UI sends 3,000/client). Not available on a hosted backend unless the cache is uploaded there.
+2. **Uploaded dataset** (`dataset_id`, auth required; FL page "Train on: <active dataset>"):
+   shared adapter → `clean_for_training` → stratified 20 % test → IID (or Dirichlet for `A_dir*`)
+   partitions over K clients → 10 % local val. Rejected with a reason if < 2 classes or
+   < 20 rows/client remain (e.g. a single-capture file like `DDoS-ACK 2.csv`).
+The job's `data_source` is saved (`data_source.json`) and the FL page shows **that job's run**
+(badge "Your run" vs "Saved benchmark run"), using the configured rounds (≤ 50).
+Backend FL jobs are demos: never report them as results.
 
 ---
 
-## 5. Verified results (only these are backed by artifacts)
+## 5. Detection, verdict and confidence
 
-All on **validation** data. The test set has **never** been evaluated yet.
+- Per-flow predictions come from `ml_service.predict_csv_bytes`. Endpoints (IPs/ports) are not
+  in CIC-IoT-2023 CSVs → shown as "not in dataset"; the drawer shows raw model-input features
+  (`key_features`) plus the attack's name, family and description.
+- **Attack verdict** (`frontend/src/components/detection/AttackVerdict.tsx`, `computeVerdict`,
+  tests in `src/tests/attackVerdict.test.ts`): < 5 % flows malicious → no attack. Votes = sum of
+  per-flow confidence. Family (DDoS vs Mirai botnet) is decided first (clear if ≥ 1.5× the next
+  family, else "mixed"); one attack is named only if it has ≥ 1.5× the votes of the runner-up,
+  otherwise all attacks within that margin (max 3) are co-main.
+  Verified: `DDoS-ACK 2 (1).csv` → DDoS / DDoS ACK fragmentation flood (99.7 %);
+  `synthetic_gmm_stress_test_first_400.csv` → DDoS (72.4 %) / SYN flood + TCP flood (35.2 % vs 34.5 %).
+- **Confidence is a raw softmax and is overconfident.** On `synthetic_gmm_stress_test_first_400`
+  (legacy MLP): accuracy 94.5 %, but 12 of the 22 errors had ≥ 99 % confidence; weakest classes
+  Mirai-greeth 67 %, DDoS-ACK 73 %, Mirai-greip 78 %. The UI never shows a rounded "100.0%"
+  (`fmtConfidence` → ">99.99%"). Calibration (temperature scaling) is open work.
 
-The notebook was run twice with identical code and seed (26 Oct and a 27 Oct rerun); both
-outputs are saved. Small differences come from CPU non-determinism, not code changes.
+---
+
+## 6. Verified results (only these are backed by artifacts)
+
+All on **validation** data. The test set has **never** been evaluated.
 
 | Run (`federated/runs/`) | What | Round/epoch 20 or final | Best val macro-F1 |
 |---|---|---|---|
@@ -175,179 +181,244 @@ outputs are saved. Small differences come from CPU non-determinism, not code cha
 | `CENT_A_iid_s42_E40` (26 Oct) | Centralized, same init/scaler/data, 40 epochs | final 0.8994 | 0.9940 (ep 17) |
 | `CENT_A_iid_s42_E40_20261027_075903` (rerun) | same | final 0.9361 | 0.9946 (ep 31) |
 
-Centralized training oscillates heavily (val macro-F1 ranged 0.82–0.995 across epochs), so
-**always compare best-validation checkpoints**, never final epochs. Per-epoch checkpoints exist
-only for the rerun (`.../epochs/model_eNNN.pt`).
+Centralized training oscillates (val macro-F1 0.82–0.995), so **always compare best-validation
+checkpoints**. FL plateaued at macro-F1 ≈ 0.88–0.89 until round 12 because of Mirai-greip ↔
+Mirai-greeth confusion — the main error source everywhere.
 
-FL plateaued at macro-F1 ≈ 0.88–0.89 until round 12 because of Mirai-greip ↔ Mirai-greeth
-confusion, then rose. That class pair is the main source of error everywhere.
-
-**Not run yet on real data:** the full study in `notebooks/SentinelFL_Complete_Study.ipynb`
-(all scenarios × seeds 42/43/44 × fedavg/centralized/local/xgboost, one-shot test evaluation).
-The code is complete and tested; results appear in `experiments/results/` once it is run.
+**Not run yet on real data:** `notebooks/SentinelFL_Complete_Study.ipynb` (all scenarios × seeds
+42/43/44 × fedavg/centralized/local/xgboost, one-shot test evaluation).
 
 ---
 
-## 6. Research-integrity rules (follow strictly)
+## 7. Research-integrity rules (follow strictly)
 
-1. **Never invent or "estimate" metrics.** Every number shown in the UI, README, or docs must be
-   traceable to a file in `federated/runs/`, `experiments/`, or `backend/storage/evaluations/`.
-2. **Test set is untouched until final evaluation.** Model selection uses validation only; then
-   evaluate the chosen checkpoint **once** on test A and test B.
-3. **Compare like with like:** same model, init, scaler, data, and checkpoint-selection rule for
-   centralized vs federated. Don't compare FL's final round with the centralized final epoch.
-4. Report mean ± std over ≥3 seeds, with per-class precision/recall/F1 and confusion matrices.
-5. Keep existing runs; write new runs to new timestamped folders (the notebook already does this).
+1. **Never invent or "estimate" metrics.** Every number in the UI, README or docs must trace to
+   a file in `federated/runs/`, `experiments/`, `backend/storage/evaluations/`, or an API response
+   computed from real data. No fallback constants (see §12 for the ones that were removed).
+2. **Test set is untouched until final evaluation.** Select on validation; evaluate once.
+3. **Compare like with like** (model, init, scaler, data, checkpoint rule).
+4. Report mean ± std over ≥ 3 seeds, per-class P/R/F1 and confusion matrices.
+5. Keep existing runs; write new ones to new timestamped folders.
+6. Forced ("Run anyway") outputs and backend demo FL jobs are never results.
 
 ### Previously unsupported numbers (status)
 | Item | Status |
 |---|---|
-| Hardcoded `/evaluation/benchmarks` (175,669-flow matrices, non-IID/local numbers) | **Removed.** Endpoint serves `experiments/results/benchmarks.json` or `[]`. |
-| `docs/experiments.md` EXP-01…05 table | **Replaced** with the protocol; numbers come from runner output only. |
-| `experiments/verified_fl_5clients_5rounds/` 100 % accuracy | Caveat README added; first-N sampling bug fixed in `fl_service`. |
-| README 99.51 %, 100 %, 5 clients, wrong feature list, Vitest | **Corrected.** |
-| Landing page: 3 silos, 33 features, BoT-IoT, RF/LR | **Corrected** (10 clients, 39 features, CIC IoT 2023, centralized MLP + XGBoost). |
-| Design-doc 99.39 % / 98.12 % for `mlp_model.pth` | Still unreproducible (no run in repo; model predates dedup). Don't cite. |
-| XGBoost 99.92 % / 79.87 % (`Untitled4.ipynb`) | **Invalid** (5 classes, mislabelled Mirai, 0 DDoS-TCP test rows). Replaced by the `xgboost` method in the runner. |
-| Placeholder flow details (IPs `192.168.1.100`/`198.51.100.1`, ports, "Mean Packet Length 64 B if malicious", bytes/s, durations) shown for CIC data | **Removed.** Endpoints are `null` → "not in dataset"; the drawer shows raw model-input features (`key_features`) from the file. Test: `test_batch_predictions_never_invent_endpoints_or_metrics`. |
-| Detection / Evaluation pages showed the previous dataset's results after switching | **Fixed.** Results are shown only for the dataset they belong to. |
-| Frontend demo data (`src/api/mockData.ts`: 3 silos, accuracies) | Not shown by API-backed pages; `getActiveExperiment` falls back to it offline. Treat as UI placeholder only. |
+| Hardcoded `/evaluation/benchmarks` (175,669-flow matrices etc.) | **Removed.** Serves `experiments/results/benchmarks.json` or `[]`. |
+| `docs/experiments.md` EXP-01…05 table | **Replaced** with the protocol. |
+| `experiments/verified_fl_5clients_5rounds/` 100 % accuracy | Caveat README; first-N sampling bug fixed. |
+| README 99.51 %, 100 %, 5 clients, wrong feature list | **Corrected.** |
+| Landing page: 3 silos, 33 features, BoT-IoT, RF/LR | **Corrected.** |
+| Design-doc 99.39 % / 98.12 % for `mlp_model.pth` | Unreproducible. Don't cite. |
+| XGBoost 99.92 % / 79.87 % (`Untitled4.ipynb`) | **Invalid** (5 classes, mislabelled Mirai, 0 DDoS-TCP test rows). |
+| Placeholder flow details (IPs, ports, packet sizes, durations) | **Removed** (test `test_batch_predictions_never_invent_endpoints_or_metrics`). |
+| FL page fallbacks: 98.9 % accuracy, 134,385 samples/client, client loss = global × 1.05, F1 = acc × 0.992, sampleWeight 0.1, baseline F1 0.9828 | **Removed** (`mapFLRunDetail`; missing values stay undefined). |
+| "100.0%" confidence | **Fixed** display (`fmtConfidence`). |
 
 ---
 
-## 7. Repository map
+## 8. Repository map
 
 ```
 backend/            FastAPI service (Python 3.11+)
-  app/main.py         app, CORS, router registration, startup audit event
-  app/adapters/       dataset adapters + registry (the "adapter architecture")
-  app/api/routes/     health, root, datasets, preprocessing, models, federated, evaluation, logs, system
-  app/services/       ml_service (inference/eval), fl_service (demo FedAvg), preprocessor,
-                      validator, job_runner, audit_service
-  app/core/           config.py (env + paths), security.py (Supabase JWT / local fallback)
-  app/database/       supabase.py (admin client, storage, workspace access checks),
-                      local_store.py (offline-mode dataset storage)
-  tests/              pytest suite
-  storage/            runtime: evaluations/, processed/ (gitignored), fl_runs/ (gitignored)
-frontend/           React 18 + TS + Vite + Tailwind + Recharts, deployed on Vercel
-  src/pages/          Landing, Login/Signup/Forgot/Reset, Dashboard, Datasets, Preprocessing,
-                      Models, Federated, Detection, Evaluation, Logs, Settings
-  src/lib/            backendApi.ts, supabase.ts, datasetService, modelService, csvParser, storage
-  src/tests/          node --test suites (run via tsx)
-federated/          fl_core.py (model/transform/FedAvg source of truth)
-  sentinelfl/         shared pipeline: adapter, scaler, partition, training, metrics, bundle,
-                      cache, experiments (see §4)
-  tests/              pytest for sentinelfl (synthetic data = code checks only)
-  runs/ preprocessing/ reports/   Colab outputs (cache/ and splits/ are NOT committed)
-notebooks/          SentinelFL_Complete_Study.ipynb — Colab notebook for the full study
-ml/                 artifacts/ (mlp_model.pth, scaler/label_encoder/feature_columns .joblib),
-                    data/samples/ (cic_iot_2023, edge_iiotset, n_iot sample CSVs)
-experiments/        results/ (runner output served by the API), verified_fl_5clients_5rounds/ (caveat)
-scripts/            run_experiments.py (main CLI), run_5client_fl_experiment.py (historical),
-                    verify_evaluation_metrics.py,
-                    generate_dataset_samples.py, setup/*.sql (Supabase schema + RLS, run in order 00→04;
-                    00 creates the tables; all five are idempotent, tested on Postgres 16)
-docs/               system-architecture.md, ml_fl_integration_contract.md, experiments.md
-                    (features.md, problem-statement.md are empty)
-iot_simulator/      placeholders only
+  app/main.py         app, CORS, router registration
+  app/adapters/       dataset adapters + registry
+  app/api/routes/     health, datasets (incl. local-upload), preprocessing, models
+                      (predict-csv, classify-dataset, load_dataset_bytes_for_user), federated
+                      (train with optional dataset_id), evaluation, logs, system
+  app/services/       ml_service (inference/eval/forced runs), fl_service (FedAvg jobs,
+                      prepare_dataset_source), preprocessor, validator, job_runner, audit_service
+  app/core/           config.py, security.py (Supabase JWT / local fallback)
+  app/database/       supabase.py, local_store.py (offline datasets)
+  tests/              pytest (incl. test_shared_pipeline, test_local_datasets, test_fl_uploaded_dataset)
+  storage/            runtime: evaluations/, processed/, fl_runs/, local_datasets/
+frontend/           React 18 + TS + Vite + Tailwind + Recharts (Vercel)
+  src/pages/          Landing, auth pages, Dashboard, Datasets, Preprocessing, Models,
+                      Federated, Detection, Evaluation, Logs, Settings
+  src/components/detection/AttackVerdict.tsx
+  src/api/client.ts   API client (+ mapFLRunDetail); src/lib/ supabase, localSession, …
+  src/tests/          node --test suites (tsx)
+federated/          fl_core.py · sentinelfl/ · tests/ · runs/ preprocessing/ reports/
+                    splits/ (committed) · cache/ (gitignored, 274 MB, from Drive)
+notebooks/          SentinelFL_Complete_Study.ipynb
+ml/                 artifacts/ (legacy MLP + joblibs), data/samples/
+experiments/        results/ (served by the API), verified_fl_5clients_5rounds/ (caveat)
+scripts/            run_experiments.py, setup/00–04_*.sql (Supabase schema + RLS, run in order)
+render.yaml, backend/Dockerfile, .dockerignore, frontend/vercel.json   hosting
 ```
 
 ---
 
-## 8. Commands
+## 9. Commands
 
 ```bash
-# Backend
-cd backend
+# Backend (from backend/)
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env            # optional; without Supabase it runs in local/demo mode
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
-pytest -v                       # backend tests
-# Swagger: http://127.0.0.1:8000/docs   Health: /health, /health/ready
+#   "Address already in use" → lsof -ti:8000 | xargs kill
+pytest -q
 
-# Frontend
-cd frontend
+# Frontend (from frontend/)
 npm install
 npm run dev -- --host 127.0.0.1 --port 5173
-npm test                        # npx tsx --test src/tests/*.test.ts; live-API suites need backend on :8000
 npm run build                   # tsc && vite build — must pass before deploying
+npx tsx --test src/tests/attackVerdict.test.ts
+npm test                        # live-API suites need the backend on :8000
 
-# Shared pipeline tests + experiments
+# Shared pipeline
 python -m pytest federated/tests -q
-python scripts/run_experiments.py --help         # full study; see notebooks/ for Colab
-python scripts/run_experiments.py --out <dir> --summarize-only --publish-to experiments/results
+python scripts/run_experiments.py --help
 
-# Serve a federated model (bundle = weights + adapter + scaler)
+# Serve a federated model
 ACTIVE_MODEL_BUNDLE=ml/bundles/fedavg-A_iid-s42 python -m uvicorn app.main:app --port 8000
-
-# Both via Docker
-docker compose up --build       # backend :8000, frontend :5173
 ```
 
-**Offline mode (no Supabase).** When `VITE_SUPABASE_URL` is not set, the Datasets page uploads to
-the local backend (`POST /api/v1/datasets/local-upload`), which stores files in
-`backend/storage/local_datasets/<ds-local-id>/` (gitignored). `verify_dataset_access` and
-`download_dataset_bytes` resolve `ds-local-*` ids / `local://` paths from that store, so validate,
-preview, preprocessing, classify-dataset and evaluation work unchanged. The Local Researcher login
-token (`local-researcher-session-token`, kept in `frontend/src/lib/localSession.ts`) is attached
-to API calls when there is no Supabase session. Single-machine demo mode only: no multi-tenant
-isolation beyond "uploader owns the dataset".
+**Test baseline (16 Nov 2026):** backend 81 pass + 2 environment failures
+(`test_complete_preprocessing_flow` needs Supabase; `test_fl_train_job_creation_and_polling`
+needs `federated/cache/`); federated 14 pass; frontend attackVerdict 5 pass, other suites need a
+running backend; `npm run build` passes.
 
-Smoke test: log in with "Enter as Local Researcher (Offline / Demo)", go to Detection, upload
-`ml/data/samples/cic_iot_2023_sample.csv` (expected: classified), then `edge_iiotset_sample.csv`
-(expected: rejected with a diagnostic).
+**Offline mode (no Supabase).** Without `VITE_SUPABASE_URL`, or when logged in as "Local
+Researcher", datasets upload to the backend (`POST /api/v1/datasets/local-upload` →
+`backend/storage/local_datasets/<ds-local-id>/`). The local token
+(`local-researcher-session-token`) is attached to API calls. Disabled when
+`ENVIRONMENT=production` (`ALLOW_LOCAL_AUTH`).
 
----
-
-## 9. Deployment & configuration
-
-- **Frontend** → Vercel (`frontend/vercel.json`: Vite, `dist/`, SPA rewrite to `index.html`).
-  Env vars (set in Vercel, prefix `VITE_`): `VITE_API_BASE_URL`, `VITE_SUPABASE_URL`,
-  `VITE_SUPABASE_PUBLISHABLE_KEY`. If `VITE_API_BASE_URL` is unset the app calls
-  `http://localhost:8000`. The live site says it runs in "isolated frontend mode", so no public
-  backend is assumed — check the Vercel env before relying on API features in production.
-- **Backend** → not deployed publicly as far as the repo shows; `backend/Dockerfile` +
-  `docker-compose.yml` exist. Env: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` (backend only,
-  never in frontend), `SUPABASE_ANON_KEY`, `STORAGE_BUCKET_NAME=sentinelfl-datasets`,
-  `FRONTEND_ORIGINS` (add `https://sentinelfl.vercel.app` when a backend is hosted),
-  `ENVIRONMENT`, `HOST`, `PORT`, optional `ML_ARTIFACTS_DIR`, `FEDERATED_*_DIR`,
-  `EXPERIMENT_RESULTS_DIR` (default `experiments/results`), `ACTIVE_MODEL_BUNDLE` (bundle dir).
-  The Docker image now also copies `experiments/`.
-- **Hosting (prepared):** `render.yaml` (Render Blueprint, free plan, Docker) + `backend/Dockerfile`
-  (CPU-only torch, `$PORT`, `WEB_CONCURRENCY=1`) + `.dockerignore`. Image build not verified in the
-  dev sandbox (Docker Hub / PyTorch CPU index blocked there); the start command and production
-  mode were verified locally. `ENVIRONMENT=production` disables the offline `local-*` tokens
-  (`ALLOW_LOCAL_AUTH`, default off in production) so a public backend can't be used without a
-  Supabase account. Supabase Auth → URL Configuration must list the Vercel URL for email links.
-- CORS also allows localhost / 127.0.0.1 / private LAN IPs by regex.
-- Never commit `.env` files or the service-role key.
+**Applying changes to the Mac clone via the device bridge:** write a `git format-patch` file into
+`~/Desktop/SentinelFL`, then
+`GIT_COMMITTER_NAME="Akshat Gupta" GIT_COMMITTER_EMAIL="akshat0709@users.noreply.github.com" git am x.patch && rm x.patch`
+(git identity is not configured on the Mac; the bridge needs delete permission for git's lock files).
 
 ---
 
-## 10. Conventions for changes
+## 10. Deployment & configuration
 
-- Keep `fl_core.py` as the single source of truth for model, transform, and FedAvg; if you change
-  it, mirror `ml_service.FLMLP` and re-verify that checkpoint keys/shapes still load (`strict=True`).
-- New datasets: add the mapping in `federated/sentinelfl/adapters.py` (shared by training and
-  serving), a thin backend wrapper in `backend/app/adapters/` + `registry.py`, tests in both
-  `federated/tests/` and `backend/tests/test_dataset_adapters.py`, and a sample CSV in
-  `ml/data/samples/`. Never zero-impute or alias missing features.
+**Status (16 Nov 2026): NOT deployed.** Code builds and tests pass locally, but:
+1. `akshat0709/SentinelFL` on GitHub is empty → push first: `git push -u origin main`
+   (local `main` tracks `upstream/main`; 16+ commits ahead).
+2. Backend has never run on Render; the Docker image build was never verified (blocked in the
+   dev sandbox). The first Render build is the real test.
+3. Rotate the Supabase secret key (14 characters were printed during setup, see §12).
+
+- **Frontend → Vercel** (`frontend/vercel.json`, SPA rewrite). Env: `VITE_API_BASE_URL`
+  (Render URL), `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`. Unset API URL → the app
+  calls `http://localhost:8000`.
+- **Backend → Render** (`render.yaml`, free plan, Docker, CPU-only torch, `$PORT`,
+  `WEB_CONCURRENCY=1`). Env: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` (secret key, backend
+  only), `SUPABASE_ANON_KEY` (publishable key), `STORAGE_BUCKET_NAME=sentinelfl-datasets`,
+  `FRONTEND_ORIGINS=https://sentinelfl.vercel.app`, `ENVIRONMENT=production`; optional
+  `ACTIVE_MODEL_BUNDLE`, `EXPERIMENT_RESULTS_DIR`, `FEDERATED_*_DIR`.
+- **Supabase:** run `scripts/setup/00`→`04` in the SQL editor (idempotent). Bucket
+  `sentinelfl-datasets`; free plan global upload limit **50 MB**. Auth → URL Configuration must
+  list the Vercel URL.
+- **Hosted limitations:** benchmark FL training fails (no 274 MB cache on Render; dataset-based
+  FL works); Render free sleeps after ~15 min (≈1 min cold start) and has 512 MB RAM (tight for
+  torch; very large CSVs may OOM); offline Local Researcher login is disabled in production.
+- Never commit `.env` files or the secret key.
+
+---
+
+## 11. Conventions for changes
+
+- `fl_core.py` is the single source of truth for model, transform, FedAvg; mirror changes in
+  `ml_service.FLMLP` and re-verify checkpoints load with `strict=True`.
+- New datasets: mapping in `federated/sentinelfl/adapters.py`, thin backend wrapper +
+  `registry.py`, tests in both test suites, a sample CSV in `ml/data/samples/`.
 - Train/serve new models through `sentinelfl` and ship them as `ModelBundle`s.
-- Don't overwrite files in `federated/runs/` or `ml/artifacts/`; add new versions alongside.
-- UI metrics should come from API responses backed by saved artifacts, not constants in TSX/py.
-- Run `pytest` (backend), `python -m pytest federated/tests`, and `npm run build` before committing.
-  Baseline: backend 75 pass + 2 env-dependent failures (need Supabase / `federated/splits/`);
-  federated 14 pass; frontend 47 pass with the backend running.
+- Don't overwrite `federated/runs/` or `ml/artifacts/`; add versions alongside.
+- UI numbers come from API responses, never constants or "?? 0.98"-style fallbacks.
+- Results must belong to the dataset/run they are shown for (clear state on dataset change).
+- Before committing: backend `pytest`, `python -m pytest federated/tests`, `npm run build`.
+- Don't use broad `rm` globs in `backend/storage/` — some evaluation JSONs there are tracked.
 
-## 11. Open work (priority order)
+---
 
-1. Run `notebooks/SentinelFL_Complete_Study.ipynb` on Colab (phase 1 seed 42 ≈ 3 h CPU, resumable;
-   then seeds 43/44), publish `experiments/results/` and one FedAvg bundle to `ml/bundles/`.
-2. Commit `federated/splits/*.npz` (~10 MB) so the backend FL demo works from a clean clone.
-3. Decide whether to keep `Benign2.csv` out (current cache) or rebuild cache + splits with it
-   (then all runs must be redone); retire or retrain `mlp_model.pth` on the deduplicated data.
-4. Host the backend (e.g. Render/Railway with the Dockerfile) and set `VITE_API_BASE_URL` on
-   Vercel; add `https://sentinelfl.vercel.app` to `FRONTEND_ORIGINS`.
-5. Optional research extensions: class-weighted loss for the greeth/greip pair, partial client
-   participation, FedProx for α = 0.1.
+## 12. What failed during development, and the fix
+
+Grouped by area; "Open" items are still unresolved.
+
+### Access & tooling
+| Problem | Cause | Fix |
+|---|---|---|
+| Couldn't read the Drive notebooks / Mac folder | Drive permission not granted; desktop bridge offline | User granted Drive access; reconnected the bridge |
+| Mac shell couldn't import `sentinelfl` | No PyTorch in the bridge VM (`fl_core` imports torch) | Read feature names from `federated/cache/clean_meta.json` instead |
+| Markdown accidentally inserted into a `.py` script | Edit error | Reverted to a comment |
+| Test artifacts and `package-lock.json` slipped into a commit | Over-broad `git add` | Commit amended |
+| A cleanup `rm` glob deleted 7 **tracked** evaluation JSONs | Pattern too broad in `backend/storage/evaluations/` | Restored from `HEAD~1` before committing; rule added in §11 |
+
+### Git / GitHub
+| Problem | Cause | Fix |
+|---|---|---|
+| `git am` "patch not found"; user ran commands containing `/path/to` placeholders | Patch only existed in the sandbox | Patches written straight into `~/Desktop/SentinelFL` through the bridge |
+| `git push` failed with HTTP 408 | Network/timeout on a large first push | Suggested `git config http.postBuffer 524288000`. **Open:** `origin` is still empty |
+| `git am` via the bridge left `.lock` / `tmp_obj` files | Bridge forbids deletes by default | Requested delete permission, removed locks, `git am --abort`, re-applied |
+| `git am` refused to commit | No git identity on the Mac | Run with `GIT_COMMITTER_NAME/EMAIL` env vars |
+
+### Backend
+| Problem | Cause | Fix |
+|---|---|---|
+| `ModuleNotFoundError: sentinelfl` in the backend adapter | `federated/` not on `sys.path` before import | `app/adapters/__init__` imports `app.core.config` first (adds the path) |
+| Label-map patch didn't apply | Anchor text mismatch | Re-anchored; labels merged |
+| `Address already in use` on :8000 | Old uvicorn still running | `lsof -ti:8000 \| xargs kill` |
+| sklearn `InconsistentVersionWarning` on startup | Joblibs pickled with sklearn 1.6.1 | Harmless; retrain/re-export to silence |
+| `NameError: Depends` after adding auth to `/federated/train` | Missing import | Imports fixed |
+| FL "Dataset cache missing" | 274 MB cache is gitignored, only on Drive | User downloaded `X_clean.npy`, `y_clean.npy`, `clean_meta.json`; copied to `federated/cache/` and verified (1,756,693 × 39, splits consistent) |
+| FL ignored the selected dataset; cards showed the saved Colab run; rounds silently capped at 5 | Backend only knew the cache; page reloaded the A_iid run | `dataset_id` training source; page shows the job's own run; real round count |
+| FL on `DDoS-ACK 2` / 21-row sample rejected | Single class / too few rows (by design) | Clear error message; made `cic_iot_2023_mixed_4900.csv` (700 × 7 classes from the A_iid test split) for demos |
+
+### Supabase
+| Problem | Cause | Fix |
+|---|---|---|
+| Script 01 failed on a fresh project | Tables didn't exist | Added `00_base_schema.sql` |
+| Script 02: `column reference "name" is ambiguous` | Unqualified column in a storage policy | `objects.name` |
+| Script 03: cannot drop `get_user_workspace_ids` | Policies depend on it | `DROP FUNCTION … CASCADE` + recreated the dependent policies |
+| Script 02: `must be owner of table objects` | Supabase owns `storage.objects` (RLS already on) | `ALTER TABLE storage.objects …` commented out |
+| "Upload denied by Supabase Storage RLS policy" | Local Researcher session has no Supabase JWT | `useSupabaseStorage()` = Supabase configured **and** no local session → local upload |
+| Uploads > 10 MB / > 50 MB failed | Bucket file-size limit / free-plan global cap of 50 MB | Checked bucket and global limits; 50 MB is a hard free-plan limit |
+| 14 characters of the secret key printed while checking `.env` | Debug output | Disclosed; **Open:** rotate the key |
+
+### Frontend / UX
+| Problem | Cause | Fix |
+|---|---|---|
+| Datasets page unusable without Supabase | Upload path required Storage | Offline local-upload mode |
+| Detection "Failed to fetch" / API offline | Backend was not running | Started it (run commands in §9) |
+| Evaluation and Detection showed the previous dataset's results | State/localStorage not tied to dataset id | Cleared on dataset change; only matching `dataset_id` shown |
+| Detection drawer showed invented IPs, ports, packet sizes | Placeholder generator | Removed; "not in dataset" + raw features |
+| Extra `</div>` broke DetectionPage JSX | Edit error | Removed |
+| N-BaIoT / Edge-IIoTset gave no result on Detection or Evaluation | Rejected by design | Explicit, clearly flagged "Run anyway" (§1) |
+| Duplicate object keys in `client.ts` (TS1117) | Two replacement passes overlapped | Duplicates removed |
+| "Run anyway" fired on a normal click | Click event passed as the `force` argument | Handlers wrapped: `() => handlePredictActiveDataset()` |
+| `Badge variant="danger"` type error | Variant doesn't exist | `variant="red"` |
+| Many invented fallback numbers on the FL page | `?? 0.98`-style defaults | `mapFLRunDetail`, values from the backend only |
+| Run button label wrapped onto 3 lines | Flex shrink | `whitespace-nowrap`, `flex-shrink-0` |
+| "100.0% confidence" | One-decimal rounding of 0.999997 | `fmtConfidence` (">99.99%") |
+| Only per-row labels, no answer to "which attack is this?" | No dataset-level summary | Attack Verdict (family first, confidence-weighted votes, co-main on near-ties) |
+
+### Hosting
+| Problem | Cause | Fix |
+|---|---|---|
+| Docker image build couldn't be tested | Docker Hub / PyTorch CPU index blocked in the dev sandbox | Start command verified in a simulated layout. **Open:** verify on Render |
+
+### Still open (known bugs)
+- Dataset cards show the wrong record count (e.g. 310 for a 22,550-row file; 150 / 221 for a
+  400-row file). Inference uses all rows; only the stored `row_count` is wrong.
+- ~70 MB of old processed CSVs are tracked under `backend/storage/processed/` (should be ignored).
+- "Max 100 MB" upload text should say 50 MB.
+- Confidence is uncalibrated (§5).
+
+---
+
+## 13. Open work (priority order)
+
+1. Push to `akshat0709/SentinelFL`, deploy backend (Render) + frontend env (Vercel), rotate the
+   Supabase secret key, smoke-test the hosted site.
+2. Fix the record count; untrack `backend/storage/processed/`; hide the benchmark FL option when
+   the server has no cache; fix the 100 MB text.
+3. Run `notebooks/SentinelFL_Complete_Study.ipynb` on Colab (seed 42 ≈ 3 h CPU, then 43/44);
+   publish `experiments/results/` and one FedAvg bundle to `ml/bundles/`.
+4. Temperature-scale the served model on validation data (calibrated confidence).
+5. Decide on `Benign2.csv` (current cache excludes it); retire or retrain `mlp_model.pth` on the
+   deduplicated data.
+6. Research extensions: class-weighted loss for greeth/greip, partial participation, FedProx for
+   α = 0.1.
