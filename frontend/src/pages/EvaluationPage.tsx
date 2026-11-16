@@ -36,7 +36,7 @@ import { apiClient } from '@/api/client';
 export const EvaluationPage: React.FC = () => {
   const navigate = useNavigate();
   const { success, error, info } = useToast();
-  const { activeDataset, activeDatasetId } = useActiveDataset();
+  const { activeDataset, activeDatasetId, classifyActiveDataset } = useActiveDataset();
 
   // Active Tab: 'active-dataset' vs 'benchmarks'
   const [activeTab, setActiveTab] = useState<'active-dataset' | 'benchmarks'>('active-dataset');
@@ -47,6 +47,11 @@ export const EvaluationPage: React.FC = () => {
   const [isEvaluatingFile, setIsEvaluatingFile] = useState<boolean>(false);
   const [evaluationError, setEvaluationError] = useState<string | null>(null);
   const [evaluationHistory, setEvaluationHistory] = useState<any[]>([]);
+  // Running the active dataset from this page; incompatible datasets can be forced (NOT valid)
+  const [isRunningActive, setIsRunningActive] = useState(false);
+  const [incompatibleReason, setIncompatibleReason] = useState<string | null>(null);
+  const [forcedNoLabels, setForcedNoLabels] = useState<any | null>(null);
+  const isForcedEval = !!datasetEval && datasetEval.is_valid === false;
 
   // Selected file for upload evaluation
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -113,6 +118,8 @@ export const EvaluationPage: React.FC = () => {
       }
       // Clear the previous dataset's metrics so they are never shown under another dataset.
       setDatasetEval(null);
+      setIncompatibleReason(null);
+      setForcedNoLabels(null);
       setIsLoadingDatasetEval(true);
       setEvaluationError(null);
       try {
@@ -134,6 +141,35 @@ export const EvaluationPage: React.FC = () => {
       isMounted = false;
     };
   }, [activeDatasetId]);
+
+  const handleEvaluateActive = async (forceIncompatible = false) => {
+    if (!activeDataset) return;
+    setIsRunningActive(true);
+    setForcedNoLabels(null);
+    try {
+      const res = await classifyActiveDataset(undefined, forceIncompatible);
+      setIncompatibleReason(null);
+      const ev = res.evaluation;
+      if (ev && (ev.has_ground_truth || ev.hasGroundTruth)) {
+        setDatasetEval(ev);
+        if (ev.is_valid === false) {
+          error('Forced Run: Metrics NOT Valid', `Only ${ev.scored_samples} of ${ev.total_labelled_samples} labelled rows could be scored.`);
+        } else {
+          success('Dataset Evaluated', `Computed metrics on ${(ev.evaluated_samples || 0).toLocaleString()} labelled flows.`);
+        }
+      } else if (ev && ev.is_valid === false) {
+        setForcedNoLabels(ev);
+      } else {
+        info('No Ground-Truth Labels', 'The dataset was classified, but it has no label column matching the model classes, so metrics cannot be computed.');
+      }
+    } catch (err: any) {
+      const msg: string = err.message || 'Could not evaluate the active dataset.';
+      setIncompatibleReason(!forceIncompatible && /incompatible/i.test(msg) ? msg : null);
+      error('Evaluation Failed', msg);
+    } finally {
+      setIsRunningActive(false);
+    }
+  };
 
   // Handle direct file selection
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -405,6 +441,36 @@ export const EvaluationPage: React.FC = () => {
               <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-forest-700" />
               <span className="text-sm font-medium">Loading evaluation metrics for active dataset...</span>
             </Card>
+          ) : (!datasetEval || !(datasetEval.has_ground_truth || datasetEval.hasGroundTruth)) && activeDataset && (incompatibleReason || forcedNoLabels || isRunningActive) ? (
+            <Card>
+              <div className="p-6 space-y-3 text-sm">
+                {isRunningActive ? (
+                  <p className="flex items-center gap-2 text-charcoal-600">
+                    <RefreshCw className="w-4 h-4 animate-spin text-forest-700" /> Running the model on &ldquo;{activeDataset.name}&rdquo;...
+                  </p>
+                ) : forcedNoLabels ? (
+                  <>
+                    <p className="font-semibold text-charcoal-900">No rows could be scored</p>
+                    <p className="text-charcoal-600">
+                      None of this dataset&apos;s labels is one of the model&apos;s 7 classes, so there is nothing to compare predictions with.
+                      Labels found: {Object.keys(forcedNoLabels.unmapped_labels || {}).join(', ') || 'none'}.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="font-semibold text-charcoal-900">Dataset not compatible with the trained model</p>
+                    <p className="text-charcoal-600">{incompatibleReason}</p>
+                    <p className="text-charcoal-600">
+                      You can run it anyway: missing features are filled with training averages, and only rows whose label is one of
+                      the model&apos;s 7 classes are scored. The metrics will be marked NOT VALID and will not be saved.
+                    </p>
+                    <Button variant="outline" onClick={() => handleEvaluateActive(true)}>
+                      Run anyway (not scientifically valid)
+                    </Button>
+                  </>
+                )}
+              </div>
+            </Card>
           ) : !datasetEval || !(datasetEval.has_ground_truth || datasetEval.hasGroundTruth) ? (
             <EmptyState
               title={activeDataset ? `No Evaluation Metrics Available for "${activeDataset.name}"` : 'No Dataset Evaluated Yet'}
@@ -413,11 +479,29 @@ export const EvaluationPage: React.FC = () => {
                   ? `Active dataset "${activeDataset.name}" has not been evaluated against ground-truth labels yet. Upload a labelled test CSV above or classify this dataset in Flow Detection.`
                   : 'Upload a labelled test dataset (CSV) above to evaluate the PyTorch FLMLP model and compute genuine metrics, confusion matrix, and per-class reports.'
               }
-              actionLabel="Go to Flow Detection"
-              onAction={() => navigate('/detection')}
+              actionLabel={activeDataset ? `Evaluate "${activeDataset.name}" now` : 'Go to Flow Detection'}
+              onAction={activeDataset ? () => handleEvaluateActive() : () => navigate('/detection')}
             />
           ) : (
             <>
+              {isForcedEval && (
+                <div className="rounded-lg border-2 border-red-500 bg-red-50 p-4 text-sm text-red-900" role="alert">
+                  <p className="font-bold uppercase tracking-wide">Forced run: these metrics are not valid</p>
+                  <p className="mt-1">
+                    {datasetEval.imputed_feature_count} of 39 input features were missing and filled with training averages, so the
+                    model never saw this data. Only {Number(datasetEval.scored_samples || 0).toLocaleString()} of{' '}
+                    {Number(datasetEval.total_labelled_samples || 0).toLocaleString()} labelled rows have a label that is one of the
+                    model&apos;s 7 classes, and only those were scored.
+                  </p>
+                  {datasetEval.unmapped_labels && Object.keys(datasetEval.unmapped_labels).length > 0 && (
+                    <p className="mt-1 text-xs">
+                      Not scored (classes the model was never trained on):{' '}
+                      {Object.entries(datasetEval.unmapped_labels).map(([k, v]) => `${k} (${Number(v).toLocaleString()})`).join(', ')}
+                    </p>
+                  )}
+                  <p className="mt-1 text-xs">Not saved, not in evaluation history, not exportable. Do not report these numbers.</p>
+                </div>
+              )}
               {/* Header Info & Export Buttons */}
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded bg-surface border border-border">
                 <div>
@@ -425,15 +509,19 @@ export const EvaluationPage: React.FC = () => {
                     <h3 className="text-base font-bold text-charcoal-900 font-sans">
                       Dataset Evaluation: {datasetEval.dataset_name || datasetEval.datasetName || activeDataset?.name || 'Test Dataset'}
                     </h3>
-                    <Badge variant="forest" size="sm" dot>
-                      Ground-Truth Verified
-                    </Badge>
+                    {isForcedEval ? (
+                      <Badge variant="red" size="sm" dot>NOT VALID (forced)</Badge>
+                    ) : (
+                      <Badge variant="forest" size="sm" dot>
+                        Ground-Truth Verified
+                      </Badge>
+                    )}
                   </div>
                   <p className="text-xs text-charcoal-500 font-mono mt-1">
                     Evaluated on {(datasetEval.evaluated_samples || datasetEval.totalSamples || datasetEval.total_samples || 0).toLocaleString()} valid flows • Model: {datasetEval.model_version || datasetEval.modelVersion || 'FLMLP (39→128→64→32→7)'} • Timestamp: {datasetEval.evaluated_at || datasetEval.evaluatedAt || 'Recent'}
                   </p>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className={`flex items-center gap-2 ${isForcedEval ? 'hidden' : ''}`}>
                   <Button
                     size="sm"
                     variant="outline"

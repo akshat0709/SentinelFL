@@ -151,7 +151,14 @@ def test_forced_inference_on_incompatible_dataset_is_flagged_and_never_cached(tm
     assert body["forced_compatibility"] is True
     assert len(body["imputed_features"]) == 39               # N-BaIoT shares none of the 39
     assert "NOT VALID" in body["compatibility_warning"]
-    assert body["evaluation"] is None                         # never scored
+    ev = body["evaluation"]                                   # indicative only
+    assert ev["is_valid"] is False and ev["forced_compatibility"] is True
+    labels = pd.read_csv(nbaiot)["attack_type"].astype(str).str.strip().str.lower()
+    assert ev["scored_samples"] == int((labels == "benign").sum())   # only exact class matches
+    assert "mirai_scan" in ev["unmapped_labels"] or "bashlite_combo" in ev["unmapped_labels"]
+    from app.services.ml_service import ml_service as svc
+    assert not svc.list_saved_evaluations() or all(
+        e.get("dataset_name") != "n.csv" for e in svc.list_saved_evaluations())
     assert body["total_flows"] == len(pd.read_csv(nbaiot))
     assert not any(tmp_path.iterdir())                        # nothing cached
 

@@ -708,8 +708,33 @@ class MLService:
 
         # 3. Compute Genuine Evaluation Metrics if Ground-Truth Labels Exist
         evaluation_result: Optional[Dict[str, Any]] = None
-        # Forced (feature-filled) predictions are never scored or stored as an evaluation.
-        if not is_forced and actual_labels and any(l is not None for l in actual_labels):
+        if is_forced and label_col:
+            # Forced run: an indicative, NOT VALID evaluation on only the rows whose label is
+            # exactly one of the model's 7 classes (strict aliases, no fuzzy matching).
+            # It is returned to the caller but never persisted, cached or listed in history.
+            from sentinelfl.contract import normalize_label
+            strict = [normalize_label(l) for l in df[label_col].tolist()]
+            raw_series = df[label_col].astype(str).str.strip()
+            unmapped = raw_series[[l is None for l in strict]].value_counts()
+            scored = sum(l is not None for l in strict)
+            if scored:
+                evaluation_result = self.compute_evaluation_metrics(
+                    actual_labels=strict,
+                    predictions=[f.predicted_class for f in flows],
+                    dataset_name=dataset_name or filename,
+                )
+            else:
+                evaluation_result = {"has_ground_truth": False}
+            evaluation_result.update({
+                "is_valid": False,
+                "forced_compatibility": True,
+                "scored_samples": int(scored),
+                "total_labelled_samples": int(len(strict)),
+                "unmapped_labels": {str(k): int(v) for k, v in unmapped.head(20).items()},
+                "imputed_feature_count": len(forced_info.get("imputed_features", [])),
+            })
+        # Forced (feature-filled) predictions are never stored as an evaluation.
+        elif not is_forced and actual_labels and any(l is not None for l in actual_labels):
             evaluation_result = self.compute_evaluation_metrics(
                 actual_labels=actual_labels,
                 predictions=[f.predicted_class for f in flows],
