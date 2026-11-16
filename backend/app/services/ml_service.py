@@ -96,6 +96,9 @@ class MLService:
         self.is_loaded: bool = False
         self.load_error: Optional[str] = None
         self.model_version: str = "v1.0.0-centralized-mlp"
+        self.model_name: str = "SentinelFL Centralized MLP"
+        self.preprocessing: str = "sklearn StandardScaler (scaler.joblib)"
+        self.bundle_info: Optional[Dict[str, Any]] = None
         self.dataset_evaluations: Dict[str, Dict[str, Any]] = {}
         self.dataset_predictions: Dict[str, BatchPredictionResponse] = {}
 
@@ -104,7 +107,47 @@ class MLService:
 
 
     def load_artifacts(self) -> None:
+        """Loads the active model.
+
+        If ACTIVE_MODEL_BUNDLE points to a sentinelfl ModelBundle directory (e.g. a FedAvg
+        model produced by federated/sentinelfl/experiments.py), that bundle's weights AND its
+        own scaler are used, so FL models are served through the same dataset adapter with the
+        preprocessing they were trained with. Otherwise the legacy ml/artifacts model is loaded.
+        """
+        if settings.ACTIVE_MODEL_BUNDLE:
+            if self.load_bundle(settings.ACTIVE_MODEL_BUNDLE):
+                return
+            logger.warning("Falling back to legacy ml/artifacts model after bundle load failure.")
+        self._load_legacy_artifacts()
+
+    def load_bundle(self, bundle_dir: str) -> bool:
+        """Activate a sentinelfl ModelBundle (model + adapter + scaler). Returns success."""
+        try:
+            from sentinelfl.bundle import ModelBundle
+            bundle = ModelBundle.load(bundle_dir, map_location="cpu")
+            self.model = bundle.model.to(self.device).eval()
+            self.scaler = bundle.scaler
+            self.classes = list(bundle.classes)
+            self.feature_columns = list(bundle.meta["features"])
+            self.label_encoder = None
+            self.model_version = str(bundle.meta.get("name", "bundle"))
+            self.model_name = f"SentinelFL {bundle.meta.get('kind', 'model')} bundle"
+            self.preprocessing = str(bundle.meta.get("preprocessing", {}).get("type"))
+            self.bundle_info = bundle.describe()
+            self.is_loaded, self.load_error = True, None
+            logger.info(f"Loaded model bundle '{self.model_version}' ({self.preprocessing}) from {bundle_dir}")
+            return True
+        except Exception as exc:
+            self.load_error = f"bundle load failed: {exc}"
+            logger.error(f"Failed to load model bundle from {bundle_dir}: {exc}", exc_info=True)
+            return False
+
+    def _load_legacy_artifacts(self) -> None:
         """Loads mlp_model.pth, scaler.joblib, label_encoder.joblib, and feature_columns.joblib."""
+        self.model_version = "v1.0.0-centralized-mlp"
+        self.model_name = "SentinelFL Centralized MLP"
+        self.preprocessing = "sklearn StandardScaler (scaler.joblib)"
+        self.bundle_info = None
         try:
             artifacts_dir = settings.ML_ARTIFACTS_DIR
             if not artifacts_dir.exists():
@@ -156,7 +199,7 @@ class MLService:
         """Returns model health, architecture details, and loading status."""
         return {
             "status": "healthy" if self.is_loaded else "degraded",
-            "model_name": "SentinelFL Centralized MLP",
+            "model_name": self.model_name,
             "model_version": self.model_version,
             "architecture": "FLMLP (39 -> 128 -> 64 -> 32 -> 7, ReLU, Dropout 0.2)",
             "device": str(self.device),
@@ -165,6 +208,8 @@ class MLService:
             "classes": self.classes,
             "feature_columns": self.feature_columns,
             "scaler_type": type(self.scaler).__name__ if self.scaler else "None",
+            "preprocessing": self.preprocessing,
+            "bundle": self.bundle_info,
             "checkpoint_loaded": self.is_loaded,
             "error": self.load_error,
         }

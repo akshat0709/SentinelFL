@@ -25,6 +25,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY backend /app/backend
 COPY federated /app/federated
 COPY ml /app/ml
+COPY experiments /app/experiments
 
 # Expose FastAPI port
 EXPOSE 8000

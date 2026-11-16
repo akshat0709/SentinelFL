@@ -24,7 +24,7 @@ export const AppLayout: React.FC = () => {
     window.dispatchEvent(new Event('sentinelfl:demomode-change'));
 
     if (updated) {
-      info('Demonstration Mode Active', 'Loaded benchmark datasets (CICIoT2023, BoT-IoT) and simulated experiments.');
+      info('Demonstration Mode Active', 'Offline demo mode: sample data only; no experiment results are simulated.');
     } else {
       info('Demonstration Mode Inactive', 'Showing only pristine user-created datasets and pending experiments.');
     }
@@ -37,7 +37,7 @@ export const AppLayout: React.FC = () => {
     },
     '/datasets': {
       title: 'Dataset Management & Schema Inspection',
-      description: 'Upload, inspect, and preview IoT network traffic captures (CICIoT2023, BoT-IoT, N-BaIoT).',
+      description: 'Upload, inspect, and preview IoT network traffic captures (CIC IoT 2023; Edge-IIoTset and N-BaIoT are detected).',
     },
     '/preprocessing': {
       title: 'Data Preparation & Preprocessing Pipeline',

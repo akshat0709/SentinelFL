@@ -15,6 +15,8 @@ class ModelHealthResponse(BaseModel):
     scaler_type: str
     checkpoint_loaded: bool
     error: Optional[str] = None
+    preprocessing: Optional[str] = None
+    bundle: Optional[Dict[str, Any]] = None
 
 
 class SingleFlowPredictRequest(BaseModel):

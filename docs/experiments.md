@@ -1,44 +1,53 @@
-# SentinelFL — Historical Benchmark Experiments & Research Takeaways
+# SentinelFL — Experiment Protocol
 
-This document details the research benchmark experiments conducted on 175,669 IoT network traffic flows comparing Centralized ML versus Federated Learning (Flower / FedAvg) under diverse data distribution conditions.
+This file describes **how** results are produced. The numbers themselves are written by the
+runner to `experiments/results/` (`results_summary.md`, `results_summary.csv`,
+`benchmarks.json`) and must only be quoted from there.
 
----
+> The previous version of this document listed results (EXP-01…05) that were not produced by
+> any saved run. It has been replaced.
 
-## 1. Experimental Dataset & Setup
+## Data
+- CIC IoT 2023 captures in `Mini Project CSY/CICBOTNET/` (Google Drive), 7 classes:
+  Benign, DDoS-ACK, DDoS-SYN, DDoS-TCP, Mirai-greeth_flood, Mirai-greip_flood, Mirai-udpplain.
+- Cleaned cache `FL_Project/cache/`: 26 CSV files (no `Benign2.csv`), 2,756,340 raw rows →
+  **1,756,693 rows** after removing NaN/inf rows and exact duplicates. Built by FLipynb cell 3;
+  `sentinelfl.cache.verify_cache` checks it equals the shared-adapter pipeline.
+- Splits `FL_Project/splits/` (seed 42, K = 10 clients, 10 % local validation per client):
 
-- **Benchmark Dataset**: Curated IoT Network Flow Capture (CICIoT / Botnet benchmark).
-- **Total Network Flows**: 175,669 flows.
-- **Feature Space**: 39 flow attributes (duration, rate, flag counts, protocol flags, packet size statistics).
-- **Classification Objective**: 7-class attack category identification:
-  1. `Benign`
-  2. `DDoS-ACK`
-  3. `DDoS-SYN`
-  4. `DDoS-TCP`
-  5. `Mirai-greeth_flood`
-  6. `Mirai-greip_flood`
-  7. `Mirai-udpplain`
+| Scenario | Test set | Client partition |
+|---|---|---|
+| `A_iid` | random stratified 15 % (263,504 rows) | IID per class |
+| `A_dir0.5` | same as A | Dirichlet α = 0.5 per class, Benign floor 0.5 |
+| `A_dir0.1` | same as A | Dirichlet α = 0.1 per class, Benign floor 0.5 |
+| `B_filehold_iid` | last capture file of each class + 15 % Benign (405,690 rows) | IID |
 
----
+## Pipeline (identical for every method)
+1. **Dataset adapter** — `sentinelfl.CICIoT2023Adapter` maps raw columns/labels to the
+   39-feature / 7-class contract (also used by the backend for inference).
+2. **Scaling** — log1p, then standardisation with mean/std aggregated federatedly from each
+   client's training rows (`n, Σz, Σz²` only).
+3. **Model** — FLMLP 39→128→64→32→7 (15,687 parameters), Adam lr 1e-3, batch 512,
+   optimiser re-created each pass, same initial weights for every method of a seed.
 
-## 2. Experimental Scenarios
+## Methods
+| Method | Description | Passes over data |
+|---|---|---|
+| `fedavg` | 10 clients, all participate each round, sample-weighted FedAvg | R × E (20 × 1) |
+| `centralized` | pooled union of client training splits | 20 epochs |
+| `local` | each client alone on its own data, evaluated on the shared test set | 20 epochs |
+| `xgboost` | pooled XGBoost (hist, early stopping on validation) — reference | — |
 
-| Scenario ID | Training Topology | Partitioning Strategy | Clients ($K$) | Rounds ($T$) | Local Epochs ($E$) | Macro F1 (%) | Accuracy (%) | False Positive Rate (%) |
-| :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **EXP-01** | Centralized ML | Pooled (No Client Split) | 1 | 20 epochs | N/A | **98.28%** | **98.45%** | **0.82%** |
-| **EXP-02** | Federated (FedAvg) | Uniform IID | 5 | 10 | 3 | **97.85%** | **98.02%** | **0.95%** |
-| **EXP-03** | Federated (FedAvg) | Dirichlet Non-IID ($\alpha = 0.5$) | 5 | 10 | 3 | **97.12%** | **97.35%** | **1.18%** |
-| **EXP-04** | Federated (FedAvg) | Dirichlet Non-IID ($\alpha = 0.1$) | 5 | 10 | 3 | **95.97%** | **96.20%** | **1.64%** |
-| **EXP-05** | Federated (FedAvg) | Holdout Edge Filehold | 3 | 5 | 2 | **96.40%** | **96.80%** | **1.42%** |
+## Model selection and testing
+- Checkpoint = **best validation macro-F1** (rounds for FedAvg, epochs otherwise).
+- The selected checkpoint is evaluated **once** on the scenario's test split.
+- Seeds 42, 43, 44 change initial weights and training order; splits stay fixed (seed 42).
 
----
+## Reported metrics
+Accuracy; per-class and macro precision/recall/F1; weighted F1; confusion matrix;
+binary FPR (benign flagged as attack) and FNR (attack predicted benign); per-client validation
+macro-F1 at the selected round; communication = 2 × K × 62,748 bytes per round
+(≈ 25.1 MB for 20 rounds, K = 10) vs. raw-data transfer for centralization; wall-clock time.
 
-## 3. Dynamic Research Takeaways
-
-1. **Near-Centralized Performance Preservation**:
-   Under balanced (IID) federated learning across edge clients, FedAvg achieves a Macro F1 score of **97.85%**, which is within **0.43%** of the centralized baseline (**98.28%**), while eliminating the requirement to transmit raw network traffic to a centralized server.
-2. **Robustness Under Extreme Heterogeneity (Non-IID)**:
-   Even under severe label skewness ($\alpha = 0.1$, where specific clients observe only a small subset of attack types), FedAvg retains a Macro F1 score of **95.97%** (a minor degradation of 2.31% relative to centralized training).
-3. **False Positive Rate (FPR) Containment**:
-   Crucially for operational Security Operations Centers (SOCs), the False Positive Rate remains low across all topologies ($0.82\%$ centralized vs. $0.95\%$ IID FL and $1.64\%$ extreme non-IID FL), preventing alert fatigue in live deployments.
-4. **Privacy-Preserving Edge Coordination**:
-   Edge devices retain full ownership of their network packet logs. Only weight updates ($w_t^k$) are communicated to the aggregation coordinator, achieving compliance with strict privacy standards (GDPR, ISO 27701).
+## How to run
+See `notebooks/SentinelFL_Complete_Study.ipynb` (Colab) or `scripts/run_experiments.py --help`.

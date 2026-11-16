@@ -1,3 +1,5 @@
+# NOTE: takes the FIRST N sorted indices per client/test (near single-class data); kept for history only.
+# Use scripts/run_experiments.py (stratified, full-data, best-val selection) for results.
 import sys
 import time
 import json

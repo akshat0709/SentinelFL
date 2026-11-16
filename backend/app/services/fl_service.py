@@ -411,9 +411,16 @@ class FLService:
             # Cap samples per client if requested (for quick demonstration runs)
             max_samples = req.max_samples_per_client or 5000
 
-            client_train_indices = [splits_data[k][:max_samples] for k in client_keys]
-            client_val_indices = [splits_data[k][:max(500, max_samples // 10)] for k in val_keys]
-            test_indices = splits_data["test"][:max_samples]
+            # Seeded, class-stratified subsamples. Split index arrays are sorted and the
+            # cache is ordered by source file (Benign first), so taking the first N indices
+            # (the previous behaviour) produced almost single-class clients and test sets.
+            from sentinelfl.partition import stratified_subsample
+            y_all = np.asarray(y_clean)
+            client_train_indices = [stratified_subsample(splits_data[k], y_all, max_samples, req.seed + i)
+                                    for i, k in enumerate(client_keys)]
+            client_val_indices = [stratified_subsample(splits_data[k], y_all, max(500, max_samples // 10), req.seed + 100 + i)
+                                  for i, k in enumerate(val_keys)]
+            test_indices = stratified_subsample(splits_data["test"], y_all, max_samples, req.seed + 999)
 
             # 2. Federated Standardization (privacy-preserving local stats aggregation)
             stats = [fl_core.local_stats(X_clean[idx]) for idx in client_train_indices]
@@ -530,6 +537,19 @@ class FLService:
 
             # Save final model
             torch.save(global_weights, run_output_dir / "global_model_final.pt")
+            # Package weights + adapter + federated scaler so this model can be served as-is
+            try:
+                from sentinelfl.bundle import ModelBundle
+                from sentinelfl.scalers import Log1pStandardScaler
+                ModelBundle(global_model, Log1pStandardScaler(mean, std, int(total_n)), {
+                    "name": f"fl-job-{job_id}", "kind": "federated", "adapter": "cic_iot_2023",
+                    "training": {"scenario": req.scenario, "rounds": req.rounds, "local_epochs": req.local_epochs,
+                                 "num_clients": num_clients, "max_samples_per_client": max_samples,
+                                 "seed": req.seed, "lr": req.lr, "batch_size": req.batch_size},
+                    "provenance": "backend fl_service demo job (subsampled data; not a reportable result)",
+                }).save(run_output_dir / "bundle")
+            except Exception as bexc:  # bundle export must never fail the job
+                logger.warning(f"[{job_id}] could not export model bundle: {bexc}")
 
             # Save configuration and history to disk
             with open(run_output_dir / "run_config.json", "w") as f:

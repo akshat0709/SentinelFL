@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 from typing import List
 from dotenv import load_dotenv
@@ -53,6 +54,11 @@ class Settings:
     FEDERATED_SPLITS_DIR: Path = Path(os.getenv("FEDERATED_SPLITS_DIR", str(BASE_DIR.parent / "federated" / "splits")))
     FEDERATED_REPORTS_DIR: Path = Path(os.getenv("FEDERATED_REPORTS_DIR", str(BASE_DIR.parent / "federated" / "reports")))
 
+    # Results written by federated/sentinelfl experiments (benchmarks.json, run bundles)
+    EXPERIMENT_RESULTS_DIR: Path = Path(os.getenv("EXPERIMENT_RESULTS_DIR", str(BASE_DIR.parent / "experiments" / "results")))
+    # Optional: serve a sentinelfl ModelBundle directory instead of the legacy ml/artifacts model
+    ACTIVE_MODEL_BUNDLE: str = os.getenv("ACTIVE_MODEL_BUNDLE", "")
+
     @property
     def cors_origins(self) -> List[str]:
         return [origin.strip() for origin in self.FRONTEND_ORIGINS_RAW.split(",") if origin.strip()]
@@ -62,6 +68,11 @@ class Settings:
 
 
 settings = Settings()
+
+# Make the shared pipeline (federated/fl_core.py and federated/sentinelfl/) importable.
+_fed = str(settings.FEDERATED_DIR.resolve())
+if _fed not in sys.path:
+    sys.path.append(_fed)
 # Ensure local storage and runtime cache directories exist
 settings.STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 settings.PROCESSED_CACHE_DIR.mkdir(parents=True, exist_ok=True)

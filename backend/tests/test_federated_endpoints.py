@@ -36,17 +36,25 @@ def test_federated_run_details():
     assert data["metrics"]["globalAccuracy"] > 0.95
 
 
-def test_evaluation_benchmarks():
+def test_evaluation_benchmarks_empty_without_results(tmp_path, monkeypatch):
+    """No experiment results -> empty list (never placeholder numbers)."""
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "EXPERIMENT_RESULTS_DIR", tmp_path)
     response = client.get("/api/v1/evaluation/benchmarks")
     assert response.status_code == 200
-    data = response.json()
-    assert isinstance(data, list)
-    assert len(data) >= 3
-    # Check categories
-    categories = [e["category"] for e in data]
-    assert "centralized" in categories
-    assert "federated_iid" in categories
-    assert "federated_non_iid" in categories
+    assert response.json() == []
+
+
+def test_evaluation_benchmarks_served_from_results_file(tmp_path, monkeypatch):
+    import json
+    from app.core.config import settings
+    entries = [{"id": "fedavg-A_iid", "category": "federated_iid", "dataSource": "experiment_runs", "f1Score": 0.5},
+               {"id": "centralized-A_iid", "category": "centralized", "dataSource": "experiment_runs", "f1Score": 0.6}]
+    (tmp_path / "benchmarks.json").write_text(json.dumps(entries))
+    monkeypatch.setattr(settings, "EXPERIMENT_RESULTS_DIR", tmp_path)
+    data = client.get("/api/v1/evaluation/benchmarks").json()
+    assert data == entries
+    assert all(e["dataSource"] == "experiment_runs" for e in data)
 
 
 def test_settings_paths_resolution():

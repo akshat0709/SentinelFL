@@ -392,7 +392,7 @@ export const DatasetsPage: React.FC = () => {
                 </Badge>
               </div>
               <p className="text-xs text-charcoal-500 mt-0.5 leading-relaxed">
-                Drag and drop network capture files (e.g., CICIoT2023, BoT-IoT, or N-BaIoT extracted features).
+                Drag and drop network capture files (CIC IoT 2023 flow features; Edge-IIoTset and N-BaIoT files are recognised but not scored).
                 Uploaded files are stored privately in <span className="font-mono text-charcoal-700">{STORAGE_BUCKET_NAME}</span> under authenticated RLS.
               </p>
             </div>

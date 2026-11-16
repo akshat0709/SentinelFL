@@ -1,3 +1,4 @@
+from app.core import config as _config  # noqa: F401  (puts federated/ on sys.path for sentinelfl)
 from app.adapters.base import (
     BaseDatasetAdapter,
     DatasetType,

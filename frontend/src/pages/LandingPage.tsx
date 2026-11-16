@@ -95,12 +95,12 @@ export const LandingPage: React.FC = () => {
               <div className="text-xs font-semibold text-charcoal-900 mt-0.5">Sample-Weighted FedAvg</div>
             </div>
             <div className="p-3 bg-surface rounded border border-border">
-              <div className="text-[11px] text-charcoal-500 font-mono">Simulated Silos</div>
-              <div className="text-xs font-semibold text-charcoal-900 mt-0.5">Home, Industrial, Campus</div>
+              <div className="text-[11px] text-charcoal-500 font-mono">Simulated Clients</div>
+              <div className="text-xs font-semibold text-charcoal-900 mt-0.5">10 IoT edge clients</div>
             </div>
             <div className="p-3 bg-surface rounded border border-border">
               <div className="text-[11px] text-charcoal-500 font-mono">Dataset Support</div>
-              <div className="text-xs font-semibold text-charcoal-900 mt-0.5">CICIoT2023, BoT-IoT, N-BaIoT</div>
+              <div className="text-xs font-semibold text-charcoal-900 mt-0.5">CIC IoT 2023 (Edge-IIoTset, N-BaIoT detected)</div>
             </div>
             <div className="p-3 bg-surface rounded border border-border">
               <div className="text-[11px] text-charcoal-500 font-mono">Evaluation Mode</div>
@@ -131,13 +131,13 @@ export const LandingPage: React.FC = () => {
                 1. IoT Threat Classification
               </h3>
               <p className="text-xs text-charcoal-600 leading-relaxed">
-                Evaluates detection of malicious IoT traffic vectors including Mirai UDP floods,
-                DDoS SYN floods, Reconnaissance port scans, and HTTP denial-of-service flows.
+                Classifies IoT flows into 7 classes: Benign, DDoS-ACK, DDoS-SYN, DDoS-TCP and the
+                Mirai greeth, greip and UDP-plain floods, via a shared dataset adapter.
               </p>
             </div>
             <div className="mt-5 pt-3 border-t border-border-subtle flex items-center justify-between text-[11px] font-mono text-charcoal-500">
               <span>Task: Multi-Class</span>
-              <span className="text-forest-700 font-medium">33 Flow Attributes</span>
+              <span className="text-forest-700 font-medium">39 Flow Attributes</span>
             </div>
           </Card>
 
@@ -150,13 +150,13 @@ export const LandingPage: React.FC = () => {
                 2. Collaborative Federated Training
               </h3>
               <p className="text-xs text-charcoal-600 leading-relaxed">
-                Simulates 3 distinct network domains (Smart-Home, Industrial SCADA, Campus) performing
-                local SGD optimization and transmitting only parameter weights to an aggregation coordinator.
+                Simulates 10 IoT edge clients performing local Adam optimization and transmitting only
+                model weights (and scaler statistics) to a FedAvg aggregation server.
               </p>
             </div>
             <div className="mt-5 pt-3 border-t border-border-subtle flex items-center justify-between text-[11px] font-mono text-charcoal-500">
               <span>Aggregation: FedAvg</span>
-              <span className="text-forest-700 font-medium">Dirichlet α=0.5</span>
+              <span className="text-forest-700 font-medium">IID · Dirichlet α=0.5 / 0.1</span>
             </div>
           </Card>
 
@@ -169,8 +169,8 @@ export const LandingPage: React.FC = () => {
                 3. Comparative Evaluation
               </h3>
               <p className="text-xs text-charcoal-600 leading-relaxed">
-                Rigorous side-by-side metric comparison between centralized baselines (Random Forest,
-                Logistic Regression), federated global models, and isolated local client models.
+                Side-by-side comparison of a centralized MLP baseline, XGBoost, federated global models,
+                and isolated local client models on the same held-out test splits.
               </p>
             </div>
             <div className="mt-5 pt-3 border-t border-border-subtle flex items-center justify-between text-[11px] font-mono text-charcoal-500">
@@ -203,7 +203,7 @@ export const LandingPage: React.FC = () => {
             <div className="p-3 rounded bg-surface-subtle border border-border">
               <div className="text-[10px] font-mono text-charcoal-400">Step 03</div>
               <div className="font-semibold text-charcoal-900 mt-1">Baseline Training</div>
-              <p className="text-[11px] text-charcoal-500 mt-1">Random Forest & Logistic Reg</p>
+              <p className="text-[11px] text-charcoal-500 mt-1">Centralized MLP & XGBoost</p>
             </div>
             <div className="p-3 rounded bg-surface-subtle border border-border">
               <div className="text-[10px] font-mono text-charcoal-400">Step 04</div>

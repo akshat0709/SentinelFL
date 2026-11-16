@@ -269,7 +269,7 @@ export const EvaluationPage: React.FC = () => {
     <div className="space-y-6">
       <DisclaimerBanner
         type="info"
-        message="Evaluation Workspace: Upload a labelled test dataset for genuine PyTorch FLMLP evaluation, or review empirical benchmark comparisons across Centralized ML and collaborative FedAvg (175,669 historical test flows)."
+        message="Evaluation Workspace: Upload a labelled test dataset for genuine PyTorch FLMLP evaluation, or review benchmark comparisons across Centralized ML and collaborative FedAvg loaded from saved experiment runs."
       />
 
       {/* Persistent Global Active Dataset Selector */}
@@ -286,7 +286,7 @@ export const EvaluationPage: React.FC = () => {
             },
             {
               id: 'benchmarks',
-              label: 'Historical Benchmark Experiments (175,669 Flows)',
+              label: 'Benchmark Experiments',
               icon: <BarChart3 className="w-4 h-4" />,
             },
           ]}
@@ -614,10 +614,10 @@ export const EvaluationPage: React.FC = () => {
                 Cross-Paradigm Benchmark Experiments
               </h3>
               <p className="text-xs text-charcoal-500 font-mono mt-0.5">
-                Evaluated on 175,669 held-out test split flows from the Curated IoT Traffic Corpus.
+                Each selected checkpoint evaluated once on its scenario&apos;s held-out test split (values from saved experiment runs).
               </p>
             </div>
-            <Badge variant="sage">Historical Empirical Benchmark</Badge>
+            <Badge variant="sage">From Experiment Runs</Badge>
           </div>
 
           {isLoadingBenchmarks ? (

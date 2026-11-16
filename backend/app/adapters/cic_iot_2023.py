@@ -12,6 +12,7 @@ from app.adapters.base import (
 
 logger = logging.getLogger(__name__)
 
+# Canonical contract — kept literally for readability; asserted equal to sentinelfl/fl_core below.
 CANONICAL_39_FEATURES: List[str] = [
     "psh_flag_number", "IAT", "ARP", "cwr_flag_number", "Min", "syn_flag_number",
     "ece_flag_number", "Max", "Tot size", "DNS", "fin_flag_number", "ack_flag_number",
@@ -46,6 +47,13 @@ CIC_LABEL_MAP: Dict[str, str] = {
     "mirai-greip_flood": "Mirai-greip_flood",
     "mirai-udpplain": "Mirai-udpplain",
 }
+
+try:
+    from sentinelfl.contract import FEATURES as _F, CLASSES as _C, LABEL_ALIASES as _ALIASES
+    assert CANONICAL_39_FEATURES == _F and CANONICAL_7_CLASSES == _C, "backend contract drifted from fl_core"
+    CIC_LABEL_MAP = {**_ALIASES, **CIC_LABEL_MAP}
+except ImportError:  # pragma: no cover - sentinelfl must be importable in normal deployments
+    logger.warning("sentinelfl not importable; using backend-local label map")
 
 # Potential label column candidate names
 LABEL_CANDIDATE_COLUMNS = ["label", "Label", "attack_cat", "attack_type", "class", "target", "category"]
@@ -153,44 +161,33 @@ class CICIoT2023Adapter(BaseDatasetAdapter):
         df: pd.DataFrame,
         scaler: Any = None,
     ) -> Tuple[np.ndarray, Optional[List[str]], AdapterValidationResult]:
+        """Delegates to the SHARED adapter in federated/sentinelfl (the same code path used
+        for centralized and federated training), then applies inference-time median
+        imputation and the model's own scaler (sklearn StandardScaler for the legacy MLP,
+        Log1pStandardScaler for federated bundles)."""
         validation = self.validate_schema(df)
         if not validation.is_compatible_with_flmlp:
             raise DatasetCompatibilityError(validation.rejection_reason or "Dataset is incompatible with FLMLP model.")
 
-        col_map_lower = {c.strip().lower(): c for c in df.columns}
-        aligned_df = pd.DataFrame(index=df.index)
+        from sentinelfl.adapters import CICIoT2023Adapter as SharedCICAdapter, impute_for_inference
 
-        for col in CANONICAL_39_FEATURES:
-            source_col = col if col in df.columns else col_map_lower[col.lower()]
-            aligned_df[col] = pd.to_numeric(df[source_col], errors="coerce")
+        label_col = validation.detected_label_column
+        aligned = SharedCICAdapter().align(df, label_column=label_col)
+        clean_df, _ = impute_for_inference(aligned.X)
 
-        # Sanitize +/- inf and extreme numbers
-        vals = aligned_df.to_numpy(dtype=np.float64)
-        clean_vals = np.where(np.isinf(vals) | (np.abs(vals) > 1e300), np.nan, vals)
-        col_medians = np.nanmedian(clean_vals, axis=0)
-        col_medians = np.nan_to_num(col_medians, nan=0.0)
-
-        nan_mask = np.isnan(clean_vals)
-        clean_vals[nan_mask] = np.take(col_medians, np.where(nan_mask)[1])
-
-        clean_df = pd.DataFrame(clean_vals, columns=CANONICAL_39_FEATURES, index=df.index)
-
-        # Scale features
         if scaler is not None:
-            X_scaled = scaler.transform(clean_df).astype(np.float32)
+            X_scaled = np.asarray(scaler.transform(clean_df), dtype=np.float32)
         else:
             X_scaled = clean_df.to_numpy(dtype=np.float32)
 
-        # Extract normalized labels if label column is present
+        # Labels: canonical class when recognised, otherwise the raw string (unchanged behaviour)
         actual_labels = None
-        if validation.detected_label_column:
-            raw_labels = df[validation.detected_label_column].tolist()
+        if label_col:
             actual_labels = []
-            for l in raw_labels:
-                if l is None or pd.isna(l):
+            for raw, canon in zip(aligned.raw_labels, aligned.labels):
+                if raw is None or (isinstance(raw, float) and pd.isna(raw)):
                     actual_labels.append(None)
                 else:
-                    norm = CIC_LABEL_MAP.get(str(l).strip().lower())
-                    actual_labels.append(norm if norm else str(l))
+                    actual_labels.append(canon if canon else str(raw))
 
         return X_scaled, actual_labels, validation

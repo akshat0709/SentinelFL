@@ -6,7 +6,7 @@ A research-grade cybersecurity platform engineered to detect malicious IoT netwo
 
 ## 1. Project Overview
 
-**SentinelFL** (MiniProjectBotnet) is an end-to-end IoT threat intelligence platform designed to address botnet attacks and DDoS campaigns against edge devices without centralizing raw network telemetry. The system ingests network flow captures, validates and preprocesses data without data leakage, executes centralized ML and distributed Federated Learning (FedAvg), classifies batch network flows, and computes both local ground-truth evaluation and comparative benchmark analytics against 175,669 IoT flows.
+**SentinelFL** (MiniProjectBotnet) is an end-to-end IoT threat intelligence platform designed to address botnet attacks and DDoS campaigns against edge devices without centralizing raw network telemetry. The system ingests network flow captures, validates and preprocesses data without data leakage, executes centralized ML and distributed Federated Learning (FedAvg), classifies batch network flows, and computes both local ground-truth evaluation and comparative benchmark analytics from saved experiment runs.
 
 ### Core Capabilities
 1. **Dataset Ingestion & Storage**: Private Supabase storage with workspace isolation (RLS), with graceful local fallback for offline demonstration.
@@ -15,11 +15,11 @@ A research-grade cybersecurity platform engineered to detect malicious IoT netwo
    - **Edge-IIoTset Adapter**: Validates Zeek/Wireshark network telemetry schema, prevents silent zero-imputation or arbitrary feature aliasing, and provides diagnostic rejections for unsupported FLMLP inference.
    - **N-IoT / N-BaIoT Adapter**: Validates 115 stream decay window statistics (`MI_dir_`, `H_L`, `HH_L`), enforcing cybersecurity integrity by refusing unsupported inference.
 3. **Leak-Free Preprocessing**: Train-only parameter fitting (scalers/encoders), reproducible seed configuration, and artifact persistence.
-4. **PyTorch ML Model Integration**: Canonical 39 → 128 → 64 → 32 → 7 multi-layer perceptron (FLMLP) detecting 7 distinct traffic classes (99.51% test accuracy, ~35 µs/sample inference latency).
-5. **Federated Learning (FedAvg)**: Multi-client data partitioning (5 clients, IID and Dirichlet Non-IID $\alpha \in \{0.5, 0.1\}$), sample-weighted FedAvg parameter aggregation, communication overhead tracking (~612 KB/round), and standalone checkpoint persistence (`global_model_final.pt`).
+4. **PyTorch ML Model Integration**: Canonical 39 → 128 → 64 → 32 → 7 multi-layer perceptron (FLMLP) detecting 7 distinct traffic classes. Models are served as **ModelBundles** (weights + dataset adapter + their own scaler), so centralized and federated models share one adapter.
+5. **Federated Learning (FedAvg)**: 10 simulated clients (IID, Dirichlet non-IID $\alpha \in \{0.5, 0.1\}$, and file-holdout), sample-weighted FedAvg, federated log1p standardisation, communication tracking (62,748 bytes per model transfer; ≈1.25 MB per round for 10 clients), best-validation checkpoint selection, exported as servable bundles.
 6. **Full Dataset Batch Inference**: Memory-safe chunked batch inference processing complete datasets, with pagination, search, sorting, class filtering, and CSV export.
 7. **Single-Flow Simulator**: Interactive socket & 39-feature vector simulator with attack/benign presets for real-time risk triage.
-8. **Dual-Scope Evaluation**: Distinct separation of current active dataset evaluation (7×7 confusion matrix, macro metrics, FPR, FNR) and historical benchmark experiments (175,669 flows across IID and non-IID scenarios).
+8. **Dual-Scope Evaluation**: Distinct separation of current active dataset evaluation (7×7 confusion matrix, macro metrics, FPR, FNR) and benchmark experiments loaded from `experiments/results/benchmarks.json` (empty until the experiment runner has been executed).
 9. **Granular Service Health Checks**: Readiness probing across backend, database, storage, model artifacts, inference service, and FL worker.
 
 ---
@@ -51,8 +51,9 @@ A research-grade cybersecurity platform engineered to detect malicious IoT netwo
 │  - PyTorch Checkpoint: ml/artifacts/mlp_model.pth (FLMLP 39→128→64→32→7)    │
 │  - Preprocessing Artifacts: scaler.joblib, label_encoder.joblib             │
 │  - Federated Core: federated/fl_core.py (PyTorch Federated Averaging)       │
-│  - Partitions: federated/splits/ (5 clients, IID & Dirichlet Non-IID)       │
-│  - FL Checkpoint: ml/artifacts/global_model_final.pt                        │
+│  - Shared pipeline: federated/sentinelfl/ (adapter, scaler, FedAvg, eval)   │
+│  - Partitions: federated/splits/ (10 clients, IID / Dirichlet / holdout)    │
+│  - Servable models: ModelBundle dirs (ACTIVE_MODEL_BUNDLE)                  │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -60,7 +61,7 @@ A research-grade cybersecurity platform engineered to detect malicious IoT netwo
 
 ## 3. Technology Stack & Architectural Clarifications
 
-- **Frontend**: React 18, TypeScript, Vite, Lucide React, TailwindCSS, Vitest.
+- **Frontend**: React 18, TypeScript, Vite, Lucide React, TailwindCSS, Recharts; tests run with the Node test runner (tsx).
 - **Backend**: Python 3.11+, FastAPI, Uvicorn, Pydantic v2.
 - **Data & Preprocessing**: Pandas, NumPy, Scikit-learn, Joblib.
 - **Machine Learning**: PyTorch (CPU / CUDA compatible).
@@ -74,13 +75,13 @@ A research-grade cybersecurity platform engineered to detect malicious IoT netwo
 ## 4. Machine Learning & Federated Learning Specifications
 
 ### 4.1. Feature Contract (39 Features)
-The canonical PyTorch MLP expects 39 network flow features in exact order:
+The canonical PyTorch MLP expects these 39 CIC IoT 2023 flow features in exactly this order
+(source of truth: `federated/fl_core.py::FEATURES`):
 ```
-Protocol Type, Duration, Rate, Srate, Drate, Fin Flag Number, Syn Flag Number,
-Rst Flag Number, Psh Flag Number, Ack Flag Number, Ece Flag Number, Cwr Flag Number,
-Ack Count, Syn Count, Fin Count, Urg Count, Rst Count, HTTP, HTTPS, DNS, Telnet,
-SMTP, SSH, IRC, TCP, UDP, DHCP, ARP, ICMP, IPv, LLC, Tot sum, Min, Max, AVG,
-Std, Tot size, IAT, Magnitude
+psh_flag_number, IAT, ARP, cwr_flag_number, Min, syn_flag_number, ece_flag_number, Max,
+Tot size, DNS, fin_flag_number, ack_flag_number, Std, rst_flag_number, Telnet, Header_Length,
+rst_count, Variance, HTTP, ICMP, Protocol Type, Tot sum, AVG, fin_count, IRC, IGMP, IPv,
+Number, TCP, SSH, UDP, Time_To_Live, SMTP, LLC, Rate, DHCP, ack_count, syn_count, HTTPS
 ```
 
 ### 4.2. Target Classes (7 Classes)
@@ -104,7 +105,7 @@ Located in `ml/artifacts/`:
 - `scaler.joblib`: Fitted Scikit-learn StandardScaler (39 features).
 - `label_encoder.joblib`: Fitted LabelEncoder for the 7 canonical classes.
 - `feature_columns.joblib`: Pickled list of the 39 feature names in canonical order.
-- `global_model_final.pt`: Persisted model state resulting from Federated Averaging rounds (verified 100.0% accuracy on holdout test partition).
+- Federated models are not stored here; they are exported as ModelBundle directories by `scripts/run_experiments.py` (see §7).
 
 ---
 
@@ -167,7 +168,7 @@ SentinelFL includes comprehensive automated tests across both backend and fronte
 cd backend
 .\.venv\Scripts\python.exe -m pytest -v
 ```
-**Results**: 60 passed tests covering:
+**Coverage** (run `pytest` for current counts; two tests need Supabase credentials and `federated/splits/`):
 - Modular Dataset Adapter architecture (CIC IoT 2023, Edge-IIoTset, N-IoT identification, extraction, and validation).
 - Refusal of silent zero-imputation and incompatible dataset rejection.
 - CSV validation, malformed input handling, missing values, duplicates, infinite values.
@@ -178,12 +179,17 @@ cd backend
 - Supabase JWT authentication, local researcher fallback, and workspace isolation.
 - Health readiness endpoints (`/health` readiness breakdown).
 
-### 6.2. Running Frontend Tests (Vitest)
+### 6.2. Running Frontend Tests (Node test runner via tsx)
 ```bash
 cd frontend
-npm test -- --run
+npm test
 ```
-**Results**: 39 passed unit tests across UI components, active dataset context, batch detection controls, and evaluation tabs.
+The live-API suites expect the backend running on `http://localhost:8000`.
+
+### 6.4. Shared pipeline tests
+```bash
+python -m pytest federated/tests -q
+```
 
 ### 6.3. Production Build Validation
 ```bash
@@ -194,26 +200,29 @@ Type checks and bundles the client application with 0 TypeScript errors.
 
 ---
 
-## 7. Federated Learning Experiment Results
+## 7. Experiments (centralized vs federated)
 
-An empirical 5-client, 5-round Federated Averaging experiment was conducted using partitions from `federated/splits/A_iid.npz` (5,000 samples per client):
+All experiments run through the shared pipeline in `federated/sentinelfl/` on the cleaned cache and
+fixed split files from the Colab study (10 clients; `A_iid`, `A_dir0.5`, `A_dir0.1`, `B_filehold_iid`).
+Every method uses the same adapter, federated scaler, initial weights and checkpoint rule (best
+validation macro-F1); the selected checkpoint is evaluated once on the held-out test split.
+Protocol: `docs/experiments.md`. Colab: `notebooks/SentinelFL_Complete_Study.ipynb`.
 
-| Round | Training Loss | Validation Accuracy | Validation Macro F1 | Comm Overhead |
-|:-----:|:-------------:|:-------------------:|:-------------------:|:-------------:|
-| Round 0 (Init) | 2.0194 | 0.00% | 0.00% | — |
-| Round 1 | 1.8900 | 83.78% | 45.59% | 612.8 KB |
-| Round 2 | 0.8143 | 99.40% | 99.39% | 612.8 KB |
-| Round 3 | 0.1704 | 99.72% | 99.70% | 612.8 KB |
-| Round 4 | 0.0460 | 99.96% | 99.96% | 612.8 KB |
-| Round 5 | 0.0157 | 100.00% | 100.00% | 612.8 KB |
+```bash
+python scripts/run_experiments.py --cache <FL_Project/cache> --splits <FL_Project/splits> \
+    --out <results_dir> --scenarios A_iid A_dir0.5 A_dir0.1 B_filehold_iid \
+    --seeds 42 43 44 --methods fedavg centralized local xgboost \
+    --publish-to experiments/results
+```
 
-- **Final Checkpoint**: `ml/artifacts/global_model_final.pt`
-- **Standalone Verification**: Successfully loaded into a fresh PyTorch session and evaluated on holdout test partition: Loss = 0.00187, Accuracy = 100.00%.
+Results are written to `experiments/results/results_summary.md` and served by
+`GET /api/v1/evaluation/benchmarks`. Results verified so far (validation only, Colab Flower runs
+in `federated/runs/`): FedAvg A_iid 20 rounds — validation macro-F1 0.9840 / 0.9845 (two runs).
 
----
+To serve a federated model: `ACTIVE_MODEL_BUNDLE=<path to bundle dir> uvicorn app.main:app`.
 
 ## 8. Current Scope & Known Boundaries
 
 1. **Dataset Schema Compatibility**: Live inference with `mlp_model.pth` is explicitly constrained to datasets adhering to the CIC IoT 2023 39-feature schema. Incompatible datasets (Edge-IIoTset, N-IoT) are validated at ingestion but protected against invalid inference by the Dataset Adapter registry.
 2. **Batch Flow vs. Live Network Sniffing**: SentinelFL performs memory-safe chunked batch classification on ingested network flow CSVs. Live continuous packet capture (direct Zeek/libpcap daemon tapping physical interfaces) requires local interface privileges and is not simulated as fake live streaming.
-3. **Tabular Classical Baselines**: Dedicated Random Forest and Logistic Regression scripts are maintained as independent reference benchmarks in `experiments/`, while the primary production inference engine is the verified 7-class PyTorch FLMLP.
+3. **Classical Baseline**: XGBoost (corrected 7-class labels, same splits) is available as a reference method in the experiment runner; the production inference engine is the 7-class PyTorch FLMLP.
