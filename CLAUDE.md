@@ -224,7 +224,8 @@ ml/                 artifacts/ (mlp_model.pth, scaler/label_encoder/feature_colu
 experiments/        results/ (runner output served by the API), verified_fl_5clients_5rounds/ (caveat)
 scripts/            run_experiments.py (main CLI), run_5client_fl_experiment.py (historical),
                     verify_evaluation_metrics.py,
-                    generate_dataset_samples.py, setup/*.sql (Supabase schema + RLS, run in order 01→04)
+                    generate_dataset_samples.py, setup/*.sql (Supabase schema + RLS, run in order 00→04;
+                    00 creates the tables; all five are idempotent, tested on Postgres 16)
 docs/               system-architecture.md, ml_fl_integration_contract.md, experiments.md
                     (features.md, problem-statement.md are empty)
 iot_simulator/      placeholders only

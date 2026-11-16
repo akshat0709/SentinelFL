@@ -23,10 +23,13 @@ BEGIN;
 -- ------------------------------------------------------------------------------
 
 -- Drop deprecated or previous versions of functions to allow clean return type changes without 42P13
-DROP FUNCTION IF EXISTS public.get_user_workspace_ids(uuid);
-DROP FUNCTION IF EXISTS public.is_workspace_member(uuid);
-DROP FUNCTION IF EXISTS public.is_workspace_owner(uuid);
-DROP FUNCTION IF EXISTS public.is_workspace_admin_or_owner(uuid);
+-- CASCADE removes the RLS policies that still reference these helpers (created by 01/02,
+-- or by a previous run of 03/04). Every one of them is recreated below or in 04, so the
+-- script can run on a fresh project and be re-run safely.
+DROP FUNCTION IF EXISTS public.get_user_workspace_ids(uuid) CASCADE;
+DROP FUNCTION IF EXISTS public.is_workspace_member(uuid) CASCADE;
+DROP FUNCTION IF EXISTS public.is_workspace_owner(uuid) CASCADE;
+DROP FUNCTION IF EXISTS public.is_workspace_admin_or_owner(uuid) CASCADE;
 
 
 -- ------------------------------------------------------------------------------
@@ -480,7 +483,7 @@ USING (
     OR
     EXISTS (
       SELECT 1 FROM public.datasets d
-      WHERE d.storage_path = name
+      WHERE d.storage_path = objects.name
         AND (
           d.uploaded_by = auth.uid()
           OR
@@ -505,13 +508,45 @@ USING (
     OR
     EXISTS (
       SELECT 1 FROM public.datasets d
-      WHERE d.storage_path = name
+      WHERE d.storage_path = objects.name
         AND (
           d.uploaded_by = auth.uid()
           OR
           public.is_workspace_owner(d.workspace_id)
         )
     )
+  )
+);
+
+-- ------------------------------------------------------------------------------
+-- Recreate read policies for preprocessing_jobs and federated_rounds (originally created
+-- in 01 on top of get_user_workspace_ids, which this script drops).
+-- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "preprocessing_jobs_select_policy" ON public.preprocessing_jobs;
+CREATE POLICY "preprocessing_jobs_select_policy"
+ON public.preprocessing_jobs
+FOR SELECT
+TO authenticated
+USING (
+  dataset_id IN (
+    SELECT id FROM public.datasets
+    WHERE uploaded_by = auth.uid()
+       OR public.is_workspace_owner(workspace_id)
+       OR public.is_workspace_member(workspace_id)
+  )
+);
+
+DROP POLICY IF EXISTS "federated_rounds_select_policy" ON public.federated_rounds;
+CREATE POLICY "federated_rounds_select_policy"
+ON public.federated_rounds
+FOR SELECT
+TO authenticated
+USING (
+  dataset_id IN (
+    SELECT id FROM public.datasets
+    WHERE uploaded_by = auth.uid()
+       OR public.is_workspace_owner(workspace_id)
+       OR public.is_workspace_member(workspace_id)
   )
 );
 

@@ -73,7 +73,7 @@ USING (
     EXISTS (
       SELECT 1 FROM public.datasets d
       JOIN public.workspaces w ON d.workspace_id = w.id
-      WHERE d.storage_path = name
+      WHERE d.storage_path = objects.name
         AND (
           w.owner_id = auth.uid()
           OR
@@ -98,7 +98,7 @@ USING (
     EXISTS (
       SELECT 1 FROM public.datasets d
       JOIN public.workspaces w ON d.workspace_id = w.id
-      WHERE d.storage_path = name
+      WHERE d.storage_path = objects.name
         AND (
           w.owner_id = auth.uid()
           OR
