@@ -43,6 +43,9 @@ class PredictionResult(BaseModel):
     flow_duration_ms: Optional[float] = None
     tot_fwd_pkts: Optional[int] = None
     flags: Optional[str] = None
+    # Raw values of a few canonical model input features for this flow (from the dataset,
+    # never synthesised). Endpoint fields above are None when the dataset has no such columns.
+    key_features: Optional[Dict[str, float]] = None
     predicted_class: str
     class_index: int
     actual_label: Optional[str] = None

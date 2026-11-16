@@ -115,3 +115,20 @@ def test_fl_service_job_runs_on_synthetic_cache_and_exports_servable_bundle(tmp_
         assert ml_service.preprocessing == "log1p_standard"
     finally:
         ml_service.load_artifacts()
+
+
+def test_batch_predictions_never_invent_endpoints_or_metrics():
+    """CIC IoT 2023 has no IP/port columns: endpoints must be None, features must be real."""
+    client = TestClient(app)
+    with open(SAMPLE, "rb") as f:
+        r = client.post("/api/v1/models/predict-csv", files={"file": ("s.csv", f, "text/csv")})
+    assert r.status_code == 200, r.text
+    df = pd.read_csv(SAMPLE)
+    for i, flow in enumerate(r.json()["flows"]):
+        assert flow["src_ip"] is None and flow["dst_ip"] is None
+        assert flow["src_port"] is None and flow["dst_port"] is None
+        assert flow["flow_duration_ms"] is None and flow["tot_fwd_pkts"] is None
+        for k, v in (flow["key_features"] or {}).items():
+            assert abs(v - float(df.iloc[i][k])) < 1e-6           # raw value from the file
+        expected_proto = next((p for p in ("TCP", "UDP", "ICMP") if df.iloc[i][p] > 0), None)
+        assert flow["protocol"] == expected_proto

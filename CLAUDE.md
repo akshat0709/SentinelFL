@@ -190,6 +190,8 @@ The code is complete and tested; results appear in `experiments/results/` once i
 | Landing page: 3 silos, 33 features, BoT-IoT, RF/LR | **Corrected** (10 clients, 39 features, CIC IoT 2023, centralized MLP + XGBoost). |
 | Design-doc 99.39 % / 98.12 % for `mlp_model.pth` | Still unreproducible (no run in repo; model predates dedup). Don't cite. |
 | XGBoost 99.92 % / 79.87 % (`Untitled4.ipynb`) | **Invalid** (5 classes, mislabelled Mirai, 0 DDoS-TCP test rows). Replaced by the `xgboost` method in the runner. |
+| Placeholder flow details (IPs `192.168.1.100`/`198.51.100.1`, ports, "Mean Packet Length 64 B if malicious", bytes/s, durations) shown for CIC data | **Removed.** Endpoints are `null` → "not in dataset"; the drawer shows raw model-input features (`key_features`) from the file. Test: `test_batch_predictions_never_invent_endpoints_or_metrics`. |
+| Detection / Evaluation pages showed the previous dataset's results after switching | **Fixed.** Results are shown only for the dataset they belong to. |
 | Frontend demo data (`src/api/mockData.ts`: 3 silos, accuracies) | Not shown by API-backed pages; `getActiveExperiment` falls back to it offline. Treat as UI placeholder only. |
 
 ---

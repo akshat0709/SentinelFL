@@ -5,17 +5,21 @@ export interface NetworkFlowRecord {
   id: string;
   flowId?: string;
   timestamp: string;
-  srcIp: string;
-  srcPort: number;
-  dstIp: string;
-  dstPort: number;
-  protocol: ProtocolType;
-  flowDurationMs: number;
-  totFwdPkts: number;
-  totBwdPkts: number;
-  pktLenMean: number;
-  flowBytsPerSec: number;
-  flags: string;
+  // Endpoint / derived fields are present only when the source data contains them
+  // (CIC IoT 2023 flow features have no IPs or ports). Never fill them with placeholders.
+  srcIp?: string | null;
+  srcPort?: number | null;
+  dstIp?: string | null;
+  dstPort?: number | null;
+  protocol?: ProtocolType | string | null;
+  flowDurationMs?: number | null;
+  totFwdPkts?: number | null;
+  totBwdPkts?: number | null;
+  pktLenMean?: number | null;
+  flowBytsPerSec?: number | null;
+  flags?: string | null;
+  /** Raw values of canonical model input features for this flow, straight from the data. */
+  keyFeatures?: Record<string, number> | null;
   predictedClass: string;
   actualLabel?: string;
   status?: 'classified' | 'failed' | 'pending' | 'rejected';

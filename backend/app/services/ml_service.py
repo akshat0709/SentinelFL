@@ -587,36 +587,50 @@ class MLService:
             elif pred_cls.lower() == "benign":
                 benign_count += 1
 
-            row_src_ip = str(df.iloc[idx][src_ip_col]) if src_ip_col and pd.notna(df.iloc[idx][src_ip_col]) else "192.168.1.100"
-            row_dst_ip = str(df.iloc[idx][dst_ip_col]) if dst_ip_col and pd.notna(df.iloc[idx][dst_ip_col]) else "198.51.100.1"
+            row = df.iloc[idx]
 
-            def _to_port(v, default):
+            def _to_port(v):
                 try:
                     f = float(v)
-                    return int(f) if np.isfinite(f) and 0 <= f <= 65535 else default
+                    return int(f) if np.isfinite(f) and 0 <= f <= 65535 else None
                 except (ValueError, TypeError, OverflowError):
-                    return default
+                    return None
 
-            def _to_float(v, default):
+            def _num(v):
                 try:
                     f = float(v)
-                    return f if np.isfinite(f) else default
+                    return f if np.isfinite(f) else None
                 except (ValueError, TypeError, OverflowError):
-                    return default
+                    return None
 
-            def _to_int(v, default, min_val=0, max_val=1000000):
-                try:
-                    f = float(v)
-                    return max(min_val, min(max_val, int(f))) if np.isfinite(f) else default
-                except (ValueError, TypeError, OverflowError):
-                    return default
+            # Endpoints are reported ONLY when the uploaded file has such columns.
+            # CIC IoT 2023 flow features contain no IPs or ports, so these stay None
+            # (shown as "not in dataset") instead of being invented.
+            row_src_ip = str(row[src_ip_col]) if src_ip_col and pd.notna(row[src_ip_col]) else None
+            row_dst_ip = str(row[dst_ip_col]) if dst_ip_col and pd.notna(row[dst_ip_col]) else None
+            row_src_port = _to_port(row[src_port_col]) if src_port_col and pd.notna(row[src_port_col]) else None
+            row_dst_port = _to_port(row[dst_port_col]) if dst_port_col and pd.notna(row[dst_port_col]) else None
 
-            row_src_port = _to_port(df.iloc[idx][src_port_col], 49152 + (idx % 1000)) if src_port_col and pd.notna(df.iloc[idx][src_port_col]) else 49152 + (idx % 1000)
-            row_dst_port = _to_port(df.iloc[idx][dst_port_col], 80) if dst_port_col and pd.notna(df.iloc[idx][dst_port_col]) else 80
-            row_proto = str(df.iloc[idx][proto_col]) if proto_col and pd.notna(df.iloc[idx][proto_col]) else ("TCP" if df.iloc[idx].get("TCP", 0) == 1 else "UDP")
+            # Protocol: explicit column if present, else the dataset's own one-hot indicators.
+            if proto_col and pd.notna(row[proto_col]):
+                row_proto = str(row[proto_col])
+            else:
+                row_proto = next((name for name in ("TCP", "UDP", "ICMP")
+                                  if name in df.columns and (_num(row[name]) or 0) > 0), None)
 
-            flow_duration = _to_float(df.iloc[idx].get("IAT", 0.0), 0.1) * 1000.0 if "IAT" in df.columns else 100.0
-            tot_pkts = _to_int(df.iloc[idx].get("Tot sum", 64.0) / 64.0, 10) if "Tot sum" in df.columns else 10
+            # Flags actually set in this flow's features (CIC *_flag_number columns).
+            set_flags = [lbl for col, lbl in (("syn_flag_number", "SYN"), ("ack_flag_number", "ACK"),
+                                              ("fin_flag_number", "FIN"), ("rst_flag_number", "RST"),
+                                              ("psh_flag_number", "PSH"))
+                         if col in df.columns and (_num(row[col]) or 0) > 0]
+            row_flags = "+".join(set_flags) if set_flags else None
+
+            key_features = {}
+            for col in ("IAT", "Rate", "Tot size", "AVG", "Number", "Header_Length", "Tot sum"):
+                if col in df.columns:
+                    v = _num(row[col])
+                    if v is not None:
+                        key_features[col] = v
 
             flows.append(PredictionResult(
                 id=f"flow-{idx+1}",
@@ -626,9 +640,10 @@ class MLService:
                 dst_ip=row_dst_ip,
                 dst_port=row_dst_port,
                 protocol=row_proto,
-                flow_duration_ms=flow_duration,
-                tot_fwd_pkts=tot_pkts,
-                flags="SYN" if df.iloc[idx].get("syn_flag_number", 0) == 1 else "ACK",
+                flow_duration_ms=None,
+                tot_fwd_pkts=None,
+                flags=row_flags,
+                key_features=key_features or None,
                 predicted_class=pred_cls,
                 class_index=res["class_index"],
                 actual_label=res.get("actual_label"),

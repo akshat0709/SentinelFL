@@ -62,6 +62,14 @@ type SortField =
   | 'riskLevel'
   | 'status';
 
+// Endpoint fields exist only when the uploaded data contains them (CIC IoT 2023 flow
+// features have no IPs or ports). Show that honestly instead of placeholder addresses.
+const NOT_IN_DATA = 'not in dataset';
+const fmtEndpoint = (ip?: string | null, port?: number | null): string =>
+  ip ? (port != null ? `${ip}:${port}` : ip) : NOT_IN_DATA;
+const fmtNum = (v: number): string =>
+  Math.abs(v) >= 1000 ? v.toLocaleString(undefined, { maximumFractionDigits: 2 }) : String(Number(v.toPrecision(6)));
+
 export const DetectionPage: React.FC = () => {
   const { success, info, error } = useToast();
   const {
@@ -122,7 +130,9 @@ export const DetectionPage: React.FC = () => {
 
   // Synchronize flows from activePredictions whenever activePredictions or activeDataset changes
   useEffect(() => {
-    if (activePredictions && activePredictions.flows && activePredictions.flows.length > 0) {
+    const belongsToActive =
+      !activePredictions?.dataset_id || !activeDataset || activePredictions.dataset_id === activeDataset.id;
+    if (activePredictions && belongsToActive && activePredictions.flows && activePredictions.flows.length > 0) {
       setFlows(activePredictions.flows);
       setBatchClassStats(activePredictions.per_class_counts || {});
       setBatchClassPercentages(activePredictions.per_class_percentages || {});
@@ -130,7 +140,8 @@ export const DetectionPage: React.FC = () => {
       if (!selectedFlow && activePredictions.flows.length > 0) {
         setSelectedFlow(activePredictions.flows[0]);
       }
-    } else if (!activeDataset) {
+    } else {
+      // No predictions for the active dataset (yet): never keep another dataset's flows.
       setFlows([]);
       setBatchClassStats({});
       setBatchClassPercentages({});
@@ -183,6 +194,10 @@ export const DetectionPage: React.FC = () => {
         `Analysed ${res.total_flows.toLocaleString()} flows from "${activeDataset.name}": ${res.malicious_count.toLocaleString()} malicious, ${res.benign_count.toLocaleString()} benign.`
       );
     } catch (err: any) {
+      setFlows([]);
+      setBatchClassStats({});
+      setBatchClassPercentages({});
+      setSelectedFlow(null);
       error('Dataset Inference Failed', err.message || 'Could not classify active dataset flows.');
     } finally {
       setIsClassifying(false);
@@ -315,11 +330,11 @@ export const DetectionPage: React.FC = () => {
     const rows = flows.map(f => [
       `"${f.flowId || f.id}"`,
       `"${f.timestamp}"`,
-      `"${f.srcIp}"`,
-      f.srcPort,
-      `"${f.dstIp}"`,
-      f.dstPort,
-      `"${f.protocol}"`,
+      `"${f.srcIp ?? ''}"`,
+      f.srcPort ?? '',
+      `"${f.dstIp ?? ''}"`,
+      f.dstPort ?? '',
+      `"${f.protocol ?? ''}"`,
       `"${f.actualLabel || ''}"`,
       `"${f.predictedClass}"`,
       f.isMalicious ? 'TRUE' : 'FALSE',
@@ -362,12 +377,12 @@ export const DetectionPage: React.FC = () => {
       const matchSearch =
         !q ||
         (flow.flowId || flow.id).toLowerCase().includes(q) ||
-        flow.srcIp.toLowerCase().includes(q) ||
-        flow.dstIp.toLowerCase().includes(q) ||
+        (flow.srcIp ?? '').toLowerCase().includes(q) ||
+        (flow.dstIp ?? '').toLowerCase().includes(q) ||
         flow.predictedClass.toLowerCase().includes(q) ||
         (flow.actualLabel && flow.actualLabel.toLowerCase().includes(q)) ||
-        String(flow.srcPort).includes(q) ||
-        String(flow.dstPort).includes(q);
+        (flow.srcPort != null && String(flow.srcPort).includes(q)) ||
+        (flow.dstPort != null && String(flow.dstPort).includes(q));
 
       // Class filter
       let matchClass = true;
@@ -851,15 +866,15 @@ export const DetectionPage: React.FC = () => {
                         {new Date(flow.timestamp).toLocaleTimeString()}
                       </span>
                     </td>
-                    <td className="py-2 px-3 text-charcoal-800">
-                      {flow.srcIp}:{flow.srcPort}
+                    <td className={`py-2 px-3 ${flow.srcIp ? 'text-charcoal-800' : 'text-charcoal-400 italic'}`}>
+                      {fmtEndpoint(flow.srcIp, flow.srcPort)}
                     </td>
-                    <td className="py-2 px-3 text-charcoal-800">
-                      {flow.dstIp}:{flow.dstPort}
+                    <td className={`py-2 px-3 ${flow.dstIp ? 'text-charcoal-800' : 'text-charcoal-400 italic'}`}>
+                      {fmtEndpoint(flow.dstIp, flow.dstPort)}
                     </td>
                     <td className="py-2 px-3">
                       <span className="px-1.5 py-0.5 rounded bg-charcoal-100 text-charcoal-700 text-[10px]">
-                        {flow.protocol}
+                        {flow.protocol || '—'}
                       </span>
                     </td>
                     <td className="py-2 px-3 font-sans">
@@ -1038,22 +1053,22 @@ export const DetectionPage: React.FC = () => {
                 <div className="flex justify-between py-1 border-b border-border-subtle">
                   <span className="text-charcoal-500 font-sans">Source Endpoint:</span>
                   <span className="font-semibold text-charcoal-900">
-                    {selectedFlow.srcIp}:{selectedFlow.srcPort}
+                    {fmtEndpoint(selectedFlow.srcIp, selectedFlow.srcPort)}
                   </span>
                 </div>
                 <div className="flex justify-between py-1 border-b border-border-subtle">
                   <span className="text-charcoal-500 font-sans">Destination Endpoint:</span>
                   <span className="font-semibold text-charcoal-900">
-                    {selectedFlow.dstIp}:{selectedFlow.dstPort}
+                    {fmtEndpoint(selectedFlow.dstIp, selectedFlow.dstPort)}
                   </span>
                 </div>
                 <div className="flex justify-between py-1 border-b border-border-subtle">
                   <span className="text-charcoal-500 font-sans">Transport Protocol:</span>
-                  <span className="font-semibold text-charcoal-900">{selectedFlow.protocol}</span>
+                  <span className="font-semibold text-charcoal-900">{selectedFlow.protocol || NOT_IN_DATA}</span>
                 </div>
                 <div className="flex justify-between py-1">
                   <span className="text-charcoal-500 font-sans">TCP Control Flags:</span>
-                  <span className="font-semibold text-forest-800">{selectedFlow.flags}</span>
+                  <span className="font-semibold text-forest-800">{selectedFlow.flags || 'none set'}</span>
                 </div>
               </div>
             </div>
@@ -1061,28 +1076,20 @@ export const DetectionPage: React.FC = () => {
             {/* Extracted Flow Attributes */}
             <div>
               <h4 className="text-xs font-semibold text-charcoal-900 uppercase tracking-wider mb-2 font-sans">
-                Computed Flow Features
+                Flow Features (raw values from the dataset)
               </h4>
-              <div className="grid grid-cols-2 gap-2 font-mono">
-                <div className="p-2.5 rounded bg-surface border border-border">
-                  <span className="text-[10px] text-charcoal-400 block font-sans">Flow Duration</span>
-                  <span className="font-bold text-charcoal-900">{selectedFlow.flowDurationMs} ms</span>
+              {selectedFlow.keyFeatures && Object.keys(selectedFlow.keyFeatures).length > 0 ? (
+                <div className="grid grid-cols-2 gap-2 font-mono">
+                  {Object.entries(selectedFlow.keyFeatures).map(([name, value]) => (
+                    <div key={name} className="p-2.5 rounded bg-surface border border-border">
+                      <span className="text-[10px] text-charcoal-400 block font-sans">{name}</span>
+                      <span className="font-bold text-charcoal-900">{fmtNum(value)}</span>
+                    </div>
+                  ))}
                 </div>
-                <div className="p-2.5 rounded bg-surface border border-border">
-                  <span className="text-[10px] text-charcoal-400 block font-sans">Forward Packets</span>
-                  <span className="font-bold text-charcoal-900">{selectedFlow.totFwdPkts} pkts</span>
-                </div>
-                <div className="p-2.5 rounded bg-surface border border-border">
-                  <span className="text-[10px] text-charcoal-400 block font-sans">Mean Packet Length</span>
-                  <span className="font-bold text-charcoal-900">{selectedFlow.pktLenMean} bytes</span>
-                </div>
-                <div className="p-2.5 rounded bg-surface border border-border">
-                  <span className="text-[10px] text-charcoal-400 block font-sans">Flow Rate (bytes/s)</span>
-                  <span className="font-bold text-charcoal-900">
-                    {selectedFlow.flowBytsPerSec.toLocaleString()} B/s
-                  </span>
-                </div>
-              </div>
+              ) : (
+                <p className="text-xs text-charcoal-500 font-sans">No feature values available for this flow.</p>
+              )}
             </div>
           </div>
         )}
