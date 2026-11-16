@@ -46,6 +46,10 @@ import {
 } from '@/lib/datasetService';
 import { validateDatasetApi, ValidationReportDto, uploadLocalDatasetApi, deleteLocalDatasetApi, LocalDatasetRecord } from '@/lib/backendApi';
 import { isSupabaseConfigured } from '@/lib/supabase';
+import { localSession } from '@/lib/localSession';
+
+// Supabase storage needs a real Supabase session; the offline Local Researcher login has none.
+const useSupabaseStorage = (): boolean => isSupabaseConfigured && !localSession.get();
 import { Activity, FileCheck, CheckCircle } from 'lucide-react';
 
 export const DatasetsPage: React.FC = () => {
@@ -74,7 +78,7 @@ export const DatasetsPage: React.FC = () => {
   const loadDatasets = useCallback(async () => {
     setIsLoadingList(true);
     try {
-      if (isSupabaseConfigured && workspace?.id) {
+      if (useSupabaseStorage() && workspace?.id) {
         try {
           const remoteList = await fetchWorkspaceDatasets(workspace.id);
           // Also merge any local session custom datasets if present
@@ -130,7 +134,7 @@ export const DatasetsPage: React.FC = () => {
 
     try {
       // If user is authenticated and has a workspace, perform real Supabase Storage & DB upload
-      if (isSupabaseConfigured && user?.id && workspace?.id) {
+      if (useSupabaseStorage() && user?.id && workspace?.id) {
         setUploadStatusText('Inspecting CSV schema & computing IoT feature compatibility...');
         setUploadProgress(30);
 
@@ -374,7 +378,7 @@ export const DatasetsPage: React.FC = () => {
     <div className="space-y-6">
       <DisclaimerBanner
         type="info"
-        message={isSupabaseConfigured
+        message={useSupabaseStorage()
           ? `Datasets are secured with Supabase Row Level Security and isolated inside your workspace: "${workspace?.name || 'Personal Workspace'}". Private storage bucket: ${STORAGE_BUCKET_NAME}.`
           : 'Offline mode: Supabase is not configured, so uploaded files are stored on your local backend (backend/storage/local_datasets/). Configure Supabase for shared, access-controlled storage.'}
       />
