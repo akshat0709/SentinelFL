@@ -1,0 +1,25 @@
+# Render Blueprint — SentinelFL backend (FastAPI + PyTorch, CPU)
+# Render dashboard -> New -> Blueprint -> pick this repo. You will be asked for the
+# three Supabase values marked "sync: false". Never commit those values.
+services:
+  - type: web
+    name: sentinelfl-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: FRONTEND_ORIGINS
+        value: https://sentinelfl.vercel.app
+      - key: ENVIRONMENT
+        value: production
+      - key: WEB_CONCURRENCY
+        value: "1"

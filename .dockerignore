@@ -1,0 +1,14 @@
+.git
+**/node_modules
+frontend
+**/__pycache__
+**/.venv
+**/.env
+**/.env.*
+!**/.env.example
+backend/storage/local_datasets
+backend/storage/processed
+backend/storage/fl_runs
+federated/cache
+federated/runs/*/epochs
+notebooks

@@ -88,6 +88,12 @@ def verify_supabase_token(token: str) -> Dict[str, Any]:
 
     # Local development / offline demonstration session token
     if token.startswith("local-") or token == "test-mock-token":
+        if not settings.ALLOW_LOCAL_AUTH:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Offline demo login is disabled on this server. Please register or sign in.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         return {
             "id": "00000000-0000-0000-0000-000000000001",
             "email": "researcher@sentinelfl.org",

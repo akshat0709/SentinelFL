@@ -293,6 +293,12 @@ Smoke test: log in with "Enter as Local Researcher (Offline / Demo)", go to Dete
   `ENVIRONMENT`, `HOST`, `PORT`, optional `ML_ARTIFACTS_DIR`, `FEDERATED_*_DIR`,
   `EXPERIMENT_RESULTS_DIR` (default `experiments/results`), `ACTIVE_MODEL_BUNDLE` (bundle dir).
   The Docker image now also copies `experiments/`.
+- **Hosting (prepared):** `render.yaml` (Render Blueprint, free plan, Docker) + `backend/Dockerfile`
+  (CPU-only torch, `$PORT`, `WEB_CONCURRENCY=1`) + `.dockerignore`. Image build not verified in the
+  dev sandbox (Docker Hub / PyTorch CPU index blocked there); the start command and production
+  mode were verified locally. `ENVIRONMENT=production` disables the offline `local-*` tokens
+  (`ALLOW_LOCAL_AUTH`, default off in production) so a public backend can't be used without a
+  Supabase account. Supabase Auth → URL Configuration must list the Vercel URL for email links.
 - CORS also allows localhost / 127.0.0.1 / private LAN IPs by regex.
 - Never commit `.env` files or the service-role key.
 
@@ -310,7 +316,7 @@ Smoke test: log in with "Enter as Local Researcher (Offline / Demo)", go to Dete
 - Don't overwrite files in `federated/runs/` or `ml/artifacts/`; add new versions alongside.
 - UI metrics should come from API responses backed by saved artifacts, not constants in TSX/py.
 - Run `pytest` (backend), `python -m pytest federated/tests`, and `npm run build` before committing.
-  Baseline: backend 74 pass + 2 env-dependent failures (need Supabase / `federated/splits/`);
+  Baseline: backend 75 pass + 2 env-dependent failures (need Supabase / `federated/splits/`);
   federated 14 pass; frontend 47 pass with the backend running.
 
 ## 11. Open work (priority order)

@@ -18,6 +18,11 @@ class Settings:
     VERSION: str = "1.0.0"
     API_V1_PREFIX: str = "/api/v1"
     ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
+    # Offline "Local Researcher" tokens (local-*) — convenient on a laptop, unsafe on a public
+    # server (anyone could call the API without an account). Off by default in production.
+    ALLOW_LOCAL_AUTH: bool = os.getenv(
+        "ALLOW_LOCAL_AUTH", "false" if os.getenv("ENVIRONMENT", "development") == "production" else "true"
+    ).lower() in ("1", "true", "yes")
 
     # Supabase Configuration
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "").rstrip("/")

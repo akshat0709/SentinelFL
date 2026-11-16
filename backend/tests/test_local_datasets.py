@@ -84,3 +84,10 @@ def test_local_store_rejects_path_traversal():
     assert local_store.get("ds-local-../../etc") is None
     with pytest.raises((ValueError, FileNotFoundError)):
         local_store.read_bytes("local://ds-local-abc/../../../etc/passwd")
+
+
+def test_local_tokens_rejected_when_local_auth_disabled(client, monkeypatch):
+    monkeypatch.setattr(settings, "ALLOW_LOCAL_AUTH", False)
+    r = client.get("/api/v1/datasets/local", headers=AUTH)
+    assert r.status_code == 401
+    assert "disabled" in r.json()["detail"]
