@@ -44,7 +44,8 @@ import {
   MAX_FILE_SIZE_BYTES,
   STORAGE_BUCKET_NAME,
 } from '@/lib/datasetService';
-import { validateDatasetApi, ValidationReportDto } from '@/lib/backendApi';
+import { validateDatasetApi, ValidationReportDto, uploadLocalDatasetApi, deleteLocalDatasetApi, LocalDatasetRecord } from '@/lib/backendApi';
+import { isSupabaseConfigured } from '@/lib/supabase';
 import { Activity, FileCheck, CheckCircle } from 'lucide-react';
 
 export const DatasetsPage: React.FC = () => {
@@ -73,7 +74,7 @@ export const DatasetsPage: React.FC = () => {
   const loadDatasets = useCallback(async () => {
     setIsLoadingList(true);
     try {
-      if (workspace?.id) {
+      if (isSupabaseConfigured && workspace?.id) {
         try {
           const remoteList = await fetchWorkspaceDatasets(workspace.id);
           // Also merge any local session custom datasets if present
@@ -129,7 +130,7 @@ export const DatasetsPage: React.FC = () => {
 
     try {
       // If user is authenticated and has a workspace, perform real Supabase Storage & DB upload
-      if (user?.id && workspace?.id) {
+      if (isSupabaseConfigured && user?.id && workspace?.id) {
         setUploadStatusText('Inspecting CSV schema & computing IoT feature compatibility...');
         setUploadProgress(30);
 
@@ -159,9 +160,19 @@ export const DatasetsPage: React.FC = () => {
           `"${newDataset.name}" saved to private Supabase Storage and registered in workspace "${workspace.name}".`
         );
       } else {
-        // Fallback for isolated session when auth is initializing
-        setUploadStatusText('Inspecting CSV in local session...');
-        setUploadProgress(50);
+        // Offline mode (no Supabase): store the file on the local backend so every
+        // backend feature (validation, preprocessing, detection, evaluation) can use it.
+        setUploadStatusText('Saving file to local backend storage (offline mode)...');
+        setUploadProgress(30);
+        let localRecord: LocalDatasetRecord | null = null;
+        try {
+          localRecord = await uploadLocalDatasetApi(file);
+        } catch (uploadErr: any) {
+          console.warn('Local backend upload failed; keeping browser-only preview:', uploadErr);
+          error('Backend Unavailable', `Could not store the file on the local backend (${uploadErr.message}). Showing a browser-only preview; backend features will not work for this file.`);
+        }
+        setUploadStatusText('Inspecting CSV schema...');
+        setUploadProgress(60);
 
         const reader = new FileReader();
         reader.onload = (e) => {
@@ -183,12 +194,13 @@ export const DatasetsPage: React.FC = () => {
           }));
 
           const localDataset: Dataset = {
-            id: `ds-local-${Date.now()}`,
+            id: localRecord?.id || `ds-local-preview-${Date.now()}`,
             name: file.name.replace(/\.[^/.]+$/, ''),
             filename: file.name,
-            source: 'Local Browser Upload (Uncommitted Preview)',
+            source: localRecord ? 'Local backend storage (offline mode)' : 'Browser-only preview (backend offline)',
+            storagePath: localRecord?.storage_path,
             sizeBytes: file.size,
-            rowCount: parsed.totalRows,
+            rowCount: localRecord?.row_count ?? parsed.totalRows,
             columnCount: parsed.columns.length,
             labelColumn: labelCol,
             classDistribution,
@@ -209,7 +221,9 @@ export const DatasetsPage: React.FC = () => {
           setDatasets(prev => [localDataset, ...prev]);
           setSelectedDataset(localDataset);
           setUploadProgress(100);
-          success('Dataset Parsed in Session', `Inspected ${parsed.columns.length} features across ${parsed.totalRows.toLocaleString()} rows.`);
+          if (localRecord) {
+            success('Dataset Stored Locally', `"${localDataset.name}" saved on the local backend (${localRecord.row_count.toLocaleString()} rows). It can now be validated, preprocessed and classified.`);
+          }
         };
         reader.readAsText(file.slice(0, 1024 * 1024 * 2));
       }
@@ -238,7 +252,11 @@ export const DatasetsPage: React.FC = () => {
     setIsDeleting(true);
     try {
       // 1. If it's a remote Supabase dataset, purge from storage and public.datasets
-      if (datasetToDelete.storagePath || (!datasetToDelete.isDemoSample && !datasetToDelete.id.startsWith('ds-local-'))) {
+      if (datasetToDelete.id.startsWith('ds-local-')) {
+        if (datasetToDelete.storagePath?.startsWith('local://')) {
+          await deleteLocalDatasetApi(datasetToDelete.id);
+        }
+      } else if (datasetToDelete.storagePath || !datasetToDelete.isDemoSample) {
         const result = await deleteDatasetFromSupabase(datasetToDelete);
         if (!result.success) {
           throw new Error(result.error);
@@ -356,7 +374,9 @@ export const DatasetsPage: React.FC = () => {
     <div className="space-y-6">
       <DisclaimerBanner
         type="info"
-        message={`Datasets are secured with Supabase Row Level Security and isolated inside your workspace: "${workspace?.name || 'Personal Workspace'}". Private storage bucket: ${STORAGE_BUCKET_NAME}.`}
+        message={isSupabaseConfigured
+          ? `Datasets are secured with Supabase Row Level Security and isolated inside your workspace: "${workspace?.name || 'Personal Workspace'}". Private storage bucket: ${STORAGE_BUCKET_NAME}.`
+          : 'Offline mode: Supabase is not configured, so uploaded files are stored on your local backend (backend/storage/local_datasets/). Configure Supabase for shared, access-controlled storage.'}
       />
 
       {/* CSV Drag & Drop Upload Card */}

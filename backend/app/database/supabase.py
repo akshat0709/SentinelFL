@@ -140,7 +140,21 @@ def verify_dataset_access(user_id: str, dataset_id: str, token: Optional[str] = 
     5. Rejects request with 403 Forbidden if user has no authorized relationship.
     
     Returns the dataset record dict if authorized.
+
+    Local (offline) datasets — ids starting with ``ds-local-`` — are resolved from the
+    backend's local store (app/database/local_store.py) without contacting Supabase.
     """
+    from app.database import local_store
+    if local_store.is_local_id(dataset_id):
+        record = local_store.get(dataset_id)
+        if record is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                detail=f"Dataset with ID '{dataset_id}' not found.")
+        if record.get("uploaded_by") != user_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="You are not authorized to access this local dataset.")
+        return record
+
     client = get_supabase_client(token=token)
     logger.info(f"Verifying access for user '{user_id}' to dataset '{dataset_id}'")
 
@@ -299,7 +313,16 @@ def download_dataset_bytes(storage_path: str, token: Optional[str] = None) -> by
     Downloads raw dataset bytes from the private Supabase Storage bucket.
     Uses authenticated client so caller's token satisfies storage RLS policies.
     Raises 404 if file does not exist or storage download fails.
+    ``local://`` paths (offline mode) are read from the backend's local dataset store.
     """
+    from app.database import local_store
+    if local_store.is_local_path(storage_path):
+        try:
+            return local_store.read_bytes(storage_path)
+        except (FileNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                detail=f"Local dataset file not found: {exc}")
+
     client = get_supabase_client(token=token)
     try:
         data = client.storage.from_(settings.STORAGE_BUCKET_NAME).download(storage_path)

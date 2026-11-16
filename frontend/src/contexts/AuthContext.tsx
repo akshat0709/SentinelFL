@@ -1,3 +1,4 @@
+import { localSession as localSessionToken } from '@/lib/localSession';
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User, Session } from '@supabase/supabase-js';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
@@ -170,6 +171,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       user: localUser,
     } as unknown as Session;
 
+    localSessionToken.set(localSession.access_token);
     setSession(localSession);
     setUser(localUser);
     setProfile({
@@ -296,6 +298,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const signOut = async () => {
+    localSessionToken.clear();
     setIsLoading(true);
     try {
       await supabase.auth.signOut().catch(e => console.warn('Supabase signOut error:', e));

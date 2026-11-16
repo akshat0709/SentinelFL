@@ -1,3 +1,4 @@
+import { localSession } from '@/lib/localSession';
 import { supabase } from '@/lib/supabase';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/$/, '');
@@ -71,8 +72,9 @@ async function getAuthHeaders(): Promise<HeadersInit> {
   const headers: Record<string, string> = {
     'Accept': 'application/json',
   };
-  if (session?.access_token) {
-    headers['Authorization'] = `Bearer ${session.access_token}`;
+  const token = session?.access_token || localSession.get();
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
   }
   return headers;
 }
@@ -210,4 +212,44 @@ export async function downloadProcessedDatasetBlob(
   }
 
   return { blob, filename };
+}
+
+// ---------------------------------------------------------------------------------------
+// Offline mode (Supabase not configured): datasets are stored on the local backend's disk.
+// The returned id (ds-local-...) works with validate / preview / preprocessing / classify.
+// ---------------------------------------------------------------------------------------
+export interface LocalDatasetRecord {
+  id: string;
+  name: string;
+  filename: string;
+  storage_path: string;
+  row_count: number;
+  column_count: number;
+  file_size_bytes: number;
+  created_at: string;
+  status: string;
+}
+
+export async function uploadLocalDatasetApi(file: File): Promise<LocalDatasetRecord> {
+  const headers = await getAuthHeaders();
+  const body = new FormData();
+  body.append('file', file);
+  const res = await fetch(`${API_BASE_URL}/api/v1/datasets/local-upload`, { method: 'POST', headers, body });
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(errBody.detail || `Local upload failed with status ${res.status}`);
+  }
+  return await res.json();
+}
+
+export async function deleteLocalDatasetApi(datasetId: string): Promise<void> {
+  const headers = await getAuthHeaders();
+  const res = await fetch(`${API_BASE_URL}/api/v1/datasets/local/${encodeURIComponent(datasetId)}`, {
+    method: 'DELETE',
+    headers,
+  });
+  if (!res.ok && res.status !== 404) {
+    const errBody = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(errBody.detail || `Local delete failed with status ${res.status}`);
+  }
 }

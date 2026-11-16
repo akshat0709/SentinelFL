@@ -21,6 +21,50 @@ async def list_dataset_adapters():
     return adapter_registry.list_adapters()
 
 
+@router.post("/local-upload")
+async def upload_local_dataset(
+    file: UploadFile = File(...),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """
+    Offline mode: stores an uploaded CSV on the backend's own disk (no Supabase needed) and
+    returns its dataset record. The returned ``id`` (``ds-local-...``) works with every
+    dataset-scoped endpoint: validate, preview, preprocessing, classify and evaluation.
+    """
+    from app.core.config import settings
+    from app.database import local_store
+    if not file.filename or not file.filename.lower().endswith((".csv", ".txt")):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Only .csv or .txt network flow files are accepted.")
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty.")
+    if len(content) > settings.MAX_FILE_SIZE_BYTES:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                            detail=f"File exceeds {settings.MAX_FILE_SIZE_BYTES // (1024 * 1024)} MB limit.")
+    record = local_store.save(content, file.filename, current_user.id)
+    logger.info(f"Stored local dataset {record['id']} ({record['row_count']} rows) for {current_user.id}")
+    return record
+
+
+@router.get("/local")
+async def list_local_datasets(current_user: AuthenticatedUser = Depends(get_current_user)):
+    """Offline mode: lists datasets stored on the backend's disk by the current user."""
+    from app.database import local_store
+    return local_store.list_for(current_user.id)
+
+
+@router.delete("/local/{dataset_id}")
+async def delete_local_dataset(dataset_id: str, current_user: AuthenticatedUser = Depends(get_current_user)):
+    """Offline mode: deletes a locally stored dataset owned by the current user."""
+    from app.database import local_store
+    record = verify_dataset_access(user_id=current_user.id, dataset_id=dataset_id)
+    if not local_store.is_local_id(record.get("id", "")):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Not a local dataset.")
+    local_store.delete(dataset_id)
+    return {"deleted": dataset_id}
+
+
 @router.post("/detect-adapter")
 async def detect_dataset_adapter(file: UploadFile = File(...)):
     """

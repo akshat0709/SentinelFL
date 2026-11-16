@@ -204,7 +204,8 @@ backend/            FastAPI service (Python 3.11+)
   app/services/       ml_service (inference/eval), fl_service (demo FedAvg), preprocessor,
                       validator, job_runner, audit_service
   app/core/           config.py (env + paths), security.py (Supabase JWT / local fallback)
-  app/database/       supabase.py (admin client, storage, workspace access checks)
+  app/database/       supabase.py (admin client, storage, workspace access checks),
+                      local_store.py (offline-mode dataset storage)
   tests/              pytest suite
   storage/            runtime: evaluations/, processed/ (gitignored), fl_runs/ (gitignored)
 frontend/           React 18 + TS + Vite + Tailwind + Recharts, deployed on Vercel
@@ -262,6 +263,15 @@ ACTIVE_MODEL_BUNDLE=ml/bundles/fedavg-A_iid-s42 python -m uvicorn app.main:app -
 docker compose up --build       # backend :8000, frontend :5173
 ```
 
+**Offline mode (no Supabase).** When `VITE_SUPABASE_URL` is not set, the Datasets page uploads to
+the local backend (`POST /api/v1/datasets/local-upload`), which stores files in
+`backend/storage/local_datasets/<ds-local-id>/` (gitignored). `verify_dataset_access` and
+`download_dataset_bytes` resolve `ds-local-*` ids / `local://` paths from that store, so validate,
+preview, preprocessing, classify-dataset and evaluation work unchanged. The Local Researcher login
+token (`local-researcher-session-token`, kept in `frontend/src/lib/localSession.ts`) is attached
+to API calls when there is no Supabase session. Single-machine demo mode only: no multi-tenant
+isolation beyond "uploader owns the dataset".
+
 Smoke test: log in with "Enter as Local Researcher (Offline / Demo)", go to Detection, upload
 `ml/data/samples/cic_iot_2023_sample.csv` (expected: classified), then `edge_iiotset_sample.csv`
 (expected: rejected with a diagnostic).
@@ -299,7 +309,7 @@ Smoke test: log in with "Enter as Local Researcher (Offline / Demo)", go to Dete
 - Don't overwrite files in `federated/runs/` or `ml/artifacts/`; add new versions alongside.
 - UI metrics should come from API responses backed by saved artifacts, not constants in TSX/py.
 - Run `pytest` (backend), `python -m pytest federated/tests`, and `npm run build` before committing.
-  Baseline: backend 70 pass + 2 env-dependent failures (need Supabase / `federated/splits/`);
+  Baseline: backend 74 pass + 2 env-dependent failures (need Supabase / `federated/splits/`);
   federated 14 pass; frontend 47 pass with the backend running.
 
 ## 11. Open work (priority order)

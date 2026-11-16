@@ -25,3 +25,5 @@ backend/storage/*.db
 Thumbs.db
 # Large ML cache files
 federated/cache/
+# Offline-mode uploaded datasets (user data)
+backend/storage/local_datasets/

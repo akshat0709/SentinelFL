@@ -1,3 +1,4 @@
+import { localSession } from '@/lib/localSession';
 import { storage } from '@/lib/storage';
 import { supabase } from '@/lib/supabase';
 import { BackendStatus } from '@/types/settings';
@@ -14,8 +15,9 @@ async function getAuthHeaders(): Promise<HeadersInit> {
     const headers: Record<string, string> = {
       'Accept': 'application/json',
     };
-    if (session?.access_token) {
-      headers['Authorization'] = `Bearer ${session.access_token}`;
+    const token = session?.access_token || localSession.get();
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
     }
     return headers;
   } catch {
